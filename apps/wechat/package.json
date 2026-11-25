@@ -3,10 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "build:poc": "vite build --mode poc"
+  },
   "dependencies": {
     "@we/platform": "workspace:*",
     "@we/multiplayer": "workspace:*",
     "@we/game-app": "workspace:*",
     "@we/werewolf": "workspace:*"
+  },
+  "devDependencies": {
+    "minigame-api-typings": "^3.8.23",
+    "vite": "^6.4.6"
   }
 }

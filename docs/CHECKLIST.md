@@ -17,9 +17,9 @@
 - [x] pnpm workspace monorepo，TypeScript strict
 - [x] 四套 tsconfig：核心（仅 ES2022，无 DOM / wx）、测试、Web、微信；`pnpm typecheck` 通过
 - [x] `pnpm build:web` → `dist/web`（Vite + React）
-- [x] `pnpm build:wechat` → `dist/wechat`（esbuild 单文件 `game.js` 约 78 KB，无 DOM / 模拟器代码）
+- [x] `pnpm build:wechat` → `dist/wechat`（Vite lib 模式单文件 `game.js` 约 110 KB，无 DOM / 模拟器代码）
 - [x] `pnpm build:wechat-poc` → `dist/wechat-poc`（Gate 0 PoC）
-- [x] README.md（运行方法、结构、与设计的偏差）、AGENTS.md（§17.1 约束）
+- [x] README.md（运行方法、结构、与设计的偏差）、AGENTS.md（§17.1 约束）、各子项目 README
 - [x] 导出审计：只 export 被其他文件使用的符号
 
 ### 平台适配（§6.1）

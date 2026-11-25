@@ -26,15 +26,6 @@ importers:
       '@we/werewolf':
         specifier: workspace:*
         version: link:packages/werewolf
-      esbuild:
-        specifier: ^0.25.0
-        version: 0.25.12
-      minigame-api-typings:
-        specifier: ^3.8.23
-        version: 3.8.23
-      tsx:
-        specifier: ^4.19.0
-        version: 4.23.15
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
@@ -96,6 +87,13 @@ importers:
       '@we/werewolf':
         specifier: workspace:*
         version: link:../../packages/werewolf
+    devDependencies:
+      minigame-api-typings:
+        specifier: ^3.8.23
+        version: 3.8.23
+      vite:
+        specifier: ^6.4.6
+        version: 6.4.6(tsx@4.23.15)
 
   packages/framework:
     dependencies:
@@ -1820,6 +1818,7 @@ snapshots:
       esbuild: 0.28.2
     optionalDependencies:
       fsevents: 2.3.3
+    optional: true
 
   typescript@5.9.3: {}
 

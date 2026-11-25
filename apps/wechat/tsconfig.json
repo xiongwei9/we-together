@@ -2,8 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2022"],
-    "types": ["minigame-api-typings"],
-    "typeRoots": ["../../node_modules"]
+    "types": ["minigame-api-typings"]
   },
-  "include": ["src/**/*.ts", "../../packages/platform/src/wechat/**/*.ts"]
+  "include": ["src/**/*.ts", "vite.config.ts", "../../packages/platform/src/wechat/**/*.ts"]
 }

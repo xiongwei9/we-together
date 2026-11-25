@@ -37,7 +37,7 @@ pnpm build:wechat-poc # dist/wechat-poc：Gate 0 UDP ping/pong PoC
 
 ```text
 apps/web/                 Vite + React PC 工作台（simulator/controller.ts 为实例管理器）
-apps/wechat/              微信入口 main.ts、UDP Transport、Gate 0 PoC
+apps/wechat/              微信入口 main.ts、UDP Transport、Gate 0 PoC（Vite lib 模式打包单文件 game.js）
 packages/platform/        Platform ports；web/ 与 wechat/ 适配（核心不引用 DOM / wx 类型）
 packages/framework/       Canvas 2D 节点树、flex 布局、渲染、命中测试、Scene、Toast
 packages/multiplayer/     协议与 schema、可靠消息/分片、DeviceNet、Host Authority、Player Client、规则契约
@@ -47,11 +47,14 @@ packages/testing/         VirtualNetwork、Memory Transport、手动时钟、see
 tests/                    跨包集成测试（VirtualNetwork 完整对局、命令语义、六实例 UI E2E）
 ```
 
+各子项目的说明见其目录下的 README.md。
+
 ## 与设计的对应与偏差
 
+- 构建统一使用 Vite：Web 为常规应用构建，微信为 lib 模式 IIFE 单文件（设计中微信为 esbuild 单独构建）。
 - 设计允许初期合并 `game-contract` 与 `multiplayer`：规则契约位于 `packages/multiplayer/src/contract.ts`。狼人杀放在 `packages/werewolf`（而非 `packages/games/werewolf`）。
 - 新增 `packages/game-app` 承载 Web 与微信共用的 `createGameInstance`；游戏模块由入口静态注册（`games: [werewolfGame]`），因此 game-app 不依赖具体游戏。
-- 未引入 Zod：消息 schema 为手写校验（`protocol.ts`），避免微信包体积；整个微信 `game.js` 约 80 KB。
+- 未引入 Zod：消息 schema 为手写校验（`protocol.ts`），避免微信包体积；整个微信 `game.js` 约 110 KB。
 - 协议在设计表格基础上补充了 `RESUME_REJECT` 与 `SESSION_REJECT`（会话失效/旧 epoch）。
 - **加入房间不需要地址，房间密码可选**（替代设计中的「IP:端口 + 邀请码」）：Client 周期性向发现端口 20000 广播 `DISCOVER`，Host 单播回复 `ROOM_INFO`（房主昵称、人数、是否有密码、状态），回复地址取自数据报来源。设计中 F11 网络自动发现原为 P2，因此提前实现；手动输入地址保留为兜底。密码只做入房访问控制，不是加密密钥。
 - 微信 UDP 优先绑定 20000 端口；广播同时发往子网广播地址与 `255.255.255.255`，`setBroadcast` 需要基础库 2.24.0+。
