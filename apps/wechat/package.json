@@ -1,0 +1,12 @@
+{
+  "name": "@we/wechat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@we/platform": "workspace:*",
+    "@we/multiplayer": "workspace:*",
+    "@we/game-app": "workspace:*",
+    "@we/werewolf": "workspace:*"
+  }
+}

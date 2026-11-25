@@ -1,0 +1,7 @@
+{
+  "//": "共享核心：不允许 DOM / wx / Node 类型泄漏",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "lib": ["ES2022"], "types": [] },
+  "include": ["packages/*/src/**/*.ts"],
+  "exclude": ["packages/platform/src/web/**", "packages/platform/src/wechat/**"]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "we-together",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.12.2",
+  "scripts": {
+    "dev:web": "pnpm --filter @we/web dev",
+    "build:web": "pnpm --filter @we/web build",
+    "build:wechat": "tsx scripts/build-wechat.ts",
+    "build:wechat-poc": "tsx scripts/build-wechat.ts --poc",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.core.json && tsc -p tsconfig.test.json && tsc -p apps/web/tsconfig.json && tsc -p apps/wechat/tsconfig.json"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "minigame-api-typings": "^3.8.23",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.7",
+    "@we/platform": "workspace:*",
+    "@we/framework": "workspace:*",
+    "@we/multiplayer": "workspace:*",
+    "@we/game-app": "workspace:*",
+    "@we/werewolf": "workspace:*",
+    "@we/testing": "workspace:*"
+  }
+}

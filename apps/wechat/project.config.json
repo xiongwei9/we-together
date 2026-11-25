@@ -1,0 +1,14 @@
+{
+  "description": "we-together 本地多人狼人杀（测试用；请在微信开发者工具中替换为自己的测试 AppID）",
+  "compileType": "game",
+  "appid": "touristappid",
+  "projectname": "we-together",
+  "libVersion": "2.25.0",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "minified": true
+  },
+  "condition": {}
+}

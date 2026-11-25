@@ -1,0 +1,16 @@
+{
+  "name": "@we/werewolf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./rules": "./src/rules/index.ts"
+  },
+  "dependencies": {
+    "@we/platform": "workspace:*",
+    "@we/framework": "workspace:*",
+    "@we/multiplayer": "workspace:*",
+    "@we/game-app": "workspace:*"
+  }
+}
