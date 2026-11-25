@@ -1,5 +1,5 @@
 import { button, card, column, list, modal, pressable, row, spacer, stack, text, theme, type UINode } from '@we/framework';
-import { ERROR_TEXT, type ClientState, type RoomPlayer, type RoomView, type SavedSession } from '@we/multiplayer';
+import { ERROR_TEXT, type ClientState, type DiscoveredRoom, type RoomPlayer, type RoomView, type SavedSession } from '@we/multiplayer';
 
 /** 公共场景：GameSelect / Join / Lobby / Paused / Closed（设计 §12） */
 
@@ -7,13 +7,16 @@ export interface AppModel {
   gameTitle: string;
   rulesVersion: string;
   nickname: string;
-  route: 'home' | 'join';
-  form: { address: string; invite: string };
+  /** join：局域网房间列表；manual：广播不可用时手动输入地址 */
+  route: 'home' | 'join' | 'manual';
+  form: { address: string; password: string };
+  rooms: readonly DiscoveredRoom[];
+  searching: boolean;
   busy: string | null;
   bootError: string | null;
   saved: SavedSession | null;
   client: ClientState;
-  hostInfo: { address: string | null; invite: string } | null;
+  hostInfo: { address: string | null; password: string | null } | null;
 }
 
 export interface AppActions {
@@ -21,9 +24,11 @@ export interface AppActions {
   createRoom(): void;
   openJoin(): void;
   cancelJoin(): void;
+  joinDiscovered(room: DiscoveredRoom): void;
+  openManual(): void;
   editAddress(): void;
-  editInvite(): void;
-  submitJoin(): void;
+  editPassword(): void;
+  submitManualJoin(): void;
   resumeSaved(): void;
   discardSaved(): void;
   setReady(ready: boolean): void;
@@ -96,20 +101,52 @@ export function renderHome(m: AppModel, a: AppActions, safe: { top: number; bott
   ]);
 }
 
+function roomCard(r: DiscoveredRoom, a: AppActions, disabled: boolean): UINode {
+  const full = r.players >= r.capacity;
+  const joinable = r.status === 'lobby' && !full;
+  const state = r.status !== 'lobby' ? '游戏中' : full ? '已满' : '等待加入';
+  return pressable(
+    column({ bg: theme.surface, radius: 12, padding: [12, 14, 12, 14], gap: 4, borderColor: joinable ? theme.border : '#2a2738', borderWidth: 1, opacity: joinable ? 1 : 0.5 }, [
+      row({ gap: 8 }, [
+        text(`${r.hostName} 的房间`, { size: 17, weight: 'bold', flex: 1, maxLines: 1 }),
+        r.hasPassword ? text('🔒 需密码', { size: 13, color: theme.primary }) : null,
+      ]),
+      text(`${r.gameTitle} · ${r.players}/${r.capacity} 人 · ${state}`, { size: 13, color: theme.muted }),
+    ]),
+    joinable && !disabled ? () => a.joinDiscovered(r) : undefined,
+  );
+}
+
 export function renderJoin(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
   const joining = m.client.phase === 'joining';
   return screen(safe.top, safe.bottom, [
-    header('加入房间', '向房主索取房间地址与邀请码'),
+    header('加入房间', m.searching ? '正在搜索同一 Wi-Fi 下的房间…' : '已停止搜索'),
+    field('我的昵称', m.nickname, '点击设置昵称', a.editNickname),
+    m.rooms.length
+      ? list(m.rooms, (r) => roomCard(r, a, joining || !m.nickname))
+      : card([
+          text('暂未发现房间', { size: 16, align: 'center' }),
+          text('请确认与房主连接同一 Wi-Fi；公共 Wi-Fi 可能隔离设备，可改用手机热点或手动输入地址。', { size: 13, color: theme.muted, align: 'center' }),
+        ]),
+    joining ? text('连接中…', { align: 'center', color: theme.muted }) : null,
+    m.client.error ? text(errorText(m.client.error), { color: theme.danger, align: 'center' }) : null,
+    spacer(1),
+    button('手动输入地址', { onPress: a.openManual, variant: 'secondary' }),
+    button('返回', { onPress: a.cancelJoin, variant: 'ghost' }),
+  ]);
+}
+
+export function renderManualJoin(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
+  const joining = m.client.phase === 'joining';
+  return screen(safe.top, safe.bottom, [
+    header('手动加入', '局域网搜索不到时，向房主索取地址'),
     field('我的昵称', m.nickname, '点击设置昵称', a.editNickname),
     field('房间地址', m.form.address, '例如 192.168.1.10:20000', a.editAddress),
-    field('邀请码', m.form.invite, '6 位数字', a.editInvite),
+    field('房间密码（可选）', m.form.password ? '•'.repeat(m.form.password.length) : '', '无密码可不填', a.editPassword),
     m.client.error ? text(errorText(m.client.error), { color: theme.danger }) : null,
     spacer(1),
-    button(joining ? '连接中…' : '连接', {
-      onPress: joining || !m.form.address || !m.form.invite || !m.nickname ? undefined : a.submitJoin,
-      height: 56,
-    }),
-    button('返回', { onPress: a.cancelJoin, variant: 'ghost' }),
+    button(joining ? '连接中…' : '连接', { onPress: joining || !m.form.address || !m.nickname ? undefined : a.submitManualJoin, height: 56 }),
+    button('返回', { onPress: a.openJoin, variant: 'ghost' }),
   ]);
 }
 
@@ -139,9 +176,14 @@ export function renderLobby(m: AppModel, a: AppActions, safe: { top: number; bot
     linkBanner(c, a),
     m.hostInfo
       ? card([
-          text('让其他玩家输入：', { size: 13, color: theme.muted }),
-          row({ justify: 'space-between' }, [text('地址', { color: theme.muted }), text(m.hostInfo.address ?? '未知（请检查网络）', { size: 18, weight: 'bold' })]),
-          row({ justify: 'space-between' }, [text('邀请码', { color: theme.muted }), text(m.hostInfo.invite, { size: 26, weight: 'bold', color: theme.primary })]),
+          text('同一 Wi-Fi 下的玩家在「加入房间」中即可看到本房间', { size: 13, color: theme.muted }),
+          row({ justify: 'space-between' }, [
+            text('房间密码', { color: theme.muted }),
+            m.hostInfo.password
+              ? text(m.hostInfo.password, { size: 24, weight: 'bold', color: theme.primary })
+              : text('未设置', { size: 16, color: theme.muted }),
+          ]),
+          m.hostInfo.address ? text(`搜索不到时可手动输入：${m.hostInfo.address}`, { size: 12, color: theme.muted }) : null,
         ])
       : null,
     list(

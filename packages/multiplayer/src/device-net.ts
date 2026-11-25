@@ -18,6 +18,8 @@ export interface Link {
 export interface DeviceNet {
   remote(endpoint: Endpoint): Link;
   readonly loopbackToHost: Link;
+  /** 局域网广播（房间发现） */
+  broadcast(env: Envelope): void;
   onHostInbound(handler: (raw: unknown, reply: Link) => void): Unsubscribe;
   onClientInbound(handler: (raw: unknown, from: Link) => void): Unsubscribe;
   dispose(): void;
@@ -84,6 +86,9 @@ export function createDeviceNet(options: { reliable: ReliableNode; clock: Clock 
   return {
     remote,
     loopbackToHost,
+    broadcast(env) {
+      if (!disposed) reliable.broadcast(encodeJson(env));
+    },
     onHostInbound(handler) {
       hostHandlers.add(handler);
       return () => hostHandlers.delete(handler);

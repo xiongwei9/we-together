@@ -2,6 +2,9 @@
 
 export const PROTOCOL_VERSION = 1;
 
+/** 房间密码：可选的入房口令，仅做访问控制，不作为加密密钥 */
+export const MAX_PASSWORD = 16;
+
 export type RoomStatus = 'lobby' | 'playing' | 'finished' | 'closed';
 
 export interface RoomPlayer {
@@ -63,8 +66,23 @@ export interface PlayerSnapshot<V = unknown> {
   paused: PauseInfo | null;
 }
 
+/** 房间发现应答：只含大厅展示所需的公开信息 */
+export interface RoomAdvert {
+  nonce: string;
+  protocol: number;
+  roomId: string;
+  gameId: string;
+  gameTitle: string;
+  hostName: string;
+  players: number;
+  capacity: number;
+  status: RoomStatus;
+  hasPassword: boolean;
+}
+
 export type ClientMessage =
-  | { type: 'JOIN_REQUEST'; payload: { requestId: string; protocol: number; gameId: string; invite: string; nickname: string } }
+  | { type: 'DISCOVER'; payload: { nonce: string; protocol: number; gameId: string } }
+  | { type: 'JOIN_REQUEST'; payload: { requestId: string; protocol: number; gameId: string; password: string; nickname: string } }
   | { type: 'RESUME_REQUEST'; payload: { requestId: string; playerId: string; credential: string } }
   | { type: 'ROOM_COMMAND'; payload: { commandId: string; action: RoomAction } }
   | { type: 'GAME_COMMAND'; payload: { commandId: string; phaseId: string; expectedVersion: number; action: unknown } }
@@ -72,6 +90,7 @@ export type ClientMessage =
   | { type: 'HEARTBEAT'; payload: { t: number } };
 
 export type HostMessage =
+  | { type: 'ROOM_INFO'; payload: RoomAdvert }
   | { type: 'JOIN_ACCEPT'; payload: { requestId: string; playerId: string; credential: string; sessionEpoch: string; room: RoomView } }
   | { type: 'JOIN_REJECT'; payload: { requestId: string; code: string } }
   | { type: 'RESUME_ACCEPT'; payload: { requestId: string; playerId: string; sessionEpoch: string; room: RoomView } }
@@ -127,8 +146,10 @@ export function parseClientEnvelope(raw: unknown): ClientEnvelope | null {
   const p = env.payload;
   if (!isObj(p)) return null;
   switch (env.type) {
+    case 'DISCOVER':
+      return isId(p.nonce) && isNum(p.protocol) && isStr(p.gameId, 32) ? (env as ClientEnvelope) : null;
     case 'JOIN_REQUEST':
-      if (isId(p.requestId) && isNum(p.protocol) && isStr(p.gameId, 32) && isStr(p.invite, 16) && isStr(p.nickname, 64))
+      if (isId(p.requestId) && isNum(p.protocol) && isStr(p.gameId, 32) && isStr(p.password, MAX_PASSWORD) && isStr(p.nickname, 64))
         return env as ClientEnvelope;
       return null;
     case 'RESUME_REQUEST':
@@ -162,6 +183,11 @@ export function parseHostEnvelope(raw: unknown): HostEnvelope | null {
   const p = env.payload;
   if (!isObj(p)) return null;
   switch (env.type) {
+    case 'ROOM_INFO':
+      return isId(p.nonce) && isStr(p.roomId, 64) && isStr(p.gameId, 32) && isStr(p.gameTitle, 64) && isStr(p.hostName, 64) &&
+        isNum(p.players) && isNum(p.capacity) && isStr(p.status, 16) && isBool(p.hasPassword)
+        ? (env as HostEnvelope)
+        : null;
     case 'JOIN_ACCEPT':
       return isId(p.requestId) && isId(p.playerId) && isStr(p.credential) && isStr(p.sessionEpoch) && isRoomView(p.room)
         ? (env as HostEnvelope)
@@ -189,6 +215,7 @@ export function parseHostEnvelope(raw: unknown): HostEnvelope | null {
 }
 
 const HOST_TYPES = new Set([
+  'ROOM_INFO',
   'JOIN_ACCEPT',
   'JOIN_REJECT',
   'RESUME_ACCEPT',
@@ -217,7 +244,7 @@ export function sanitizeNickname(raw: string): string {
 /** 错误码 → 用户可读文本 */
 export const ERROR_TEXT: Record<string, string> = {
   ROOM_FULL: '房间已满',
-  BAD_INVITE: '邀请码错误',
+  BAD_PASSWORD: '房间密码错误',
   GAME_IN_PROGRESS: '游戏已开始，不能加入新成员',
   PROTOCOL: '版本不兼容',
   WRONG_GAME: '游戏类型不一致',

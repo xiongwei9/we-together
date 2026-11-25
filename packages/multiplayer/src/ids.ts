@@ -23,10 +23,3 @@ export async function createIdFactory(random: RandomSource): Promise<IdFactory> 
     },
   };
 }
-
-/** 6 位数字邀请码（仅用于入房校验，不作为加密密钥） */
-export async function createInviteCode(random: RandomSource): Promise<string> {
-  const bytes = await random.bytes(4);
-  const n = ((bytes[0]! << 24) | (bytes[1]! << 16) | (bytes[2]! << 8) | bytes[3]!) >>> 0;
-  return String(n % 1_000_000).padStart(6, '0');
-}

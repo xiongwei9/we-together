@@ -15,6 +15,11 @@ export interface Transport {
   stop(): Promise<void>;
   /** 成功仅表示交给平台发送，不表示对端收到 */
   send(to: Endpoint, bytes: Uint8Array): Promise<void>;
+  /**
+   * 局域网广播到发现端口（仅用于房间发现，不可靠、不需要 ACK）。
+   * 实现必须展开为逐 endpoint 投递或交给平台广播，不能共享对象引用。
+   */
+  broadcast(bytes: Uint8Array): Promise<void>;
   onPacket(handler: (packet: Packet) => void): Unsubscribe;
   onError(handler: (error: Error) => void): Unsubscribe;
 }

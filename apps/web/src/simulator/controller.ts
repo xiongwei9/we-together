@@ -53,7 +53,8 @@ interface Record_ {
   muted: boolean;
 }
 
-const FAST_CONFIG = { nightPhaseMs: 15_000, discussMs: 45_000, voteMs: 20_000, deadRolePhaseMs: 8_000 };
+/** 回合内无倒计时；仅缩短神职出局后假阶段的随机停留（默认 3–8s） */
+const FAST_CONFIG = { deadRoleDelayMs: { min: 1_000, max: 2_000 }, seerRevealMs: 3_000 };
 const LOG_LIMIT = 600;
 
 export interface SimulationController {
@@ -69,8 +70,8 @@ export interface SimulationController {
   setMuted(instanceId: string, muted: boolean): void;
   setPreset(preset: keyof typeof NETWORK_PRESETS): void;
   setLinkFaults(from: string, to: string, faults: NetworkFaultConfig | null): void;
-  /** 一键：实例 1 开房，其余实例用正常 JOIN 加入 */
-  hostAndJoinAll(): Promise<void>;
+  /** 一键：实例 1 开房（可选密码），其余实例经局域网发现找到房间并正常 JOIN */
+  hostAndJoinAll(password: string): Promise<void>;
   readyAll(): void;
   start(): void;
   /** 每个实例按自己的授权视图执行一次 Bot 行动（经正常 Client 命令） */
@@ -273,17 +274,31 @@ export function createSimulationController(games: readonly GamePluginDefinition[
     setLinkFaults(from, to, faults) {
       network?.setLinkFaults(from, to, faults);
     },
-    async hostAndJoinAll() {
+    async hostAndJoinAll(password) {
       const h = host();
       if (!h) return;
-      if (!h.getStatus().hostInfo) await h.actions.createRoom('玩家1');
-      const info = h.getStatus().hostInfo;
-      if (!info?.address) return;
+      if (!h.getStatus().hostInfo) await h.actions.createRoom({ nickname: '玩家1', password });
+      const roomId = h.debug?.host()?.roomId;
+      if (!roomId) return;
+      const pass = h.getStatus().hostInfo?.password ?? '';
+      const joinOne = async (inst: GameInstance, nickname: string): Promise<void> => {
+        // 与玩家点「加入房间」相同：广播搜索，等房间出现在列表后加入
+        inst.actions.searchRooms();
+        for (let i = 0; i < 50; i++) {
+          const room = inst.getStatus().rooms.find((r) => r.roomId === roomId);
+          if (room) {
+            await inst.actions.joinDiscovered(room.key, { password: pass, nickname });
+            return;
+          }
+          await new Promise<void>((resolve) => clock.setTimeout(resolve, 100));
+        }
+        inst.actions.stopSearch();
+      };
       await Promise.all(
         [...records.values()]
           .filter((r) => r.descriptor.instanceId !== 'p1' && r.instance)
           .filter((r) => r.instance!.getStatus().client.phase !== 'in-room')
-          .map((r) => r.instance!.actions.joinRoom(info.address!, info.invite, `玩家${r.descriptor.seatHint}`)),
+          .map((r) => joinOne(r.instance!, `玩家${r.descriptor.seatHint}`)),
       );
     },
     readyAll() {

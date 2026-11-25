@@ -123,7 +123,8 @@ export function button(label: string, options: ButtonOptions = {}): BoxNode {
       padding: [0, 16, 0, 16],
       borderColor: p.border,
       borderWidth: p.border ? 1 : 0,
-      opacity: options.disabled ? 0.4 : 1,
+      // 没有可执行操作的按钮一律置灰
+      opacity: options.disabled || !options.onPress ? 0.4 : 1,
     },
     pressedBg: p.pressed,
     onPress: options.onPress,

@@ -55,6 +55,7 @@ export function App() {
   const [selected, setSelected] = useState<string>('p1');
   const [columns, setColumns] = useState<number>(3);
   const [autoBot, setAutoBot] = useState(false);
+  const [roomPassword, setRoomPassword] = useState('');
 
   const create = async (): Promise<void> => {
     setZoomed(null);
@@ -97,9 +98,9 @@ export function App() {
           <input type="checkbox" checked={cfg.deterministic} onChange={(e) => setCfg({ ...cfg, deterministic: e.target.checked })} />
           固定随机
         </label>
-        <label title="夜间 15s / 讨论 45s / 投票 20s">
+        <label title="神职出局后假阶段的随机停留缩短为 1–2s（默认 3–8s）">
           <input type="checkbox" checked={cfg.fastTimers} onChange={(e) => setCfg({ ...cfg, fastTimers: e.target.checked })} />
-          快速计时
+          快速节奏
         </label>
         <label>
           视口
@@ -132,7 +133,11 @@ export function App() {
           </select>
         </label>
         <span className="sep" />
-        <button onClick={() => void controller.hostAndJoinAll()}>一键开房+加入</button>
+        <label title="可选：留空表示房间不设密码">
+          房间密码
+          <input value={roomPassword} placeholder="可选" style={{ width: 70 }} onChange={(e) => setRoomPassword(e.target.value)} />
+        </label>
+        <button onClick={() => void controller.hostAndJoinAll(roomPassword)}>一键开房+加入</button>
         <button onClick={() => controller.readyAll()}>全员准备</button>
         <button onClick={() => controller.start()}>开始</button>
         <button onClick={() => controller.botStep()}>Bot 一步</button>
@@ -273,8 +278,8 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
                 <dd>
                   {inspection.room.roomId} · {inspection.room.status} · v{inspection.room.roomVersion}
                 </dd>
-                <dt>邀请码</dt>
-                <dd>{inspection.invite}</dd>
+                <dt>密码</dt>
+                <dd>{inspection.password ?? '未设置'}</dd>
                 <dt>对局</dt>
                 <dd>{inspection.match ? `${inspection.match.matchId} · v${inspection.match.version}` : '—'}</dd>
                 <dt>阶段</dt>

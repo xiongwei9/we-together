@@ -18,10 +18,8 @@ const RULES_VERSION = 'werewolf-6-v1';
 export const ROLE_DECK: readonly Role[] = ['wolf', 'wolf', 'seer', 'witch', 'villager', 'villager'];
 
 const DEFAULT_CONFIG: WerewolfConfig = {
-  nightPhaseMs: 30_000,
-  discussMs: 120_000,
-  voteMs: 30_000,
-  deadRolePhaseMs: 30_000,
+  deadRoleDelayMs: { min: 3_000, max: 8_000 },
+  seerRevealMs: 3_000,
 };
 
 const ok: Validation = { ok: true };
@@ -80,7 +78,6 @@ const alive = (s: WerewolfState): string[] => order(s).filter((id) => s.players[
 const order = (s: WerewolfState): string[] => Object.keys(s.seats).sort((a, b) => s.seats[a]! - s.seats[b]!);
 const aliveWith = (s: WerewolfState, role: Role): string[] => alive(s).filter((id) => s.players[id]!.role === role);
 const isAlive = (s: WerewolfState, id: string | null | undefined): id is string => !!id && !!s.players[id]?.alive;
-const roleOf = (s: WerewolfState, id: string): Role | undefined => s.players[id]?.role;
 
 function checkWinner(s: WerewolfState): Winner | null {
   const wolves = alive(s).filter((id) => s.players[id]!.role === 'wolf').length;
@@ -99,7 +96,7 @@ function enterPhase(s: WerewolfState, phase: Phase, events: WerewolfEvent[]): We
 
 function startNight(s: WerewolfState, round: number, events: WerewolfEvent[]): WerewolfState {
   return enterPhase(
-    { ...s, round, wolfVotes: {}, wolfTarget: null, seerActed: false, witchAction: null, dayVotes: {} },
+    { ...s, round, wolfVotes: {}, wolfIntents: {}, wolfTarget: null, seerActed: false, seerLastCheck: null, witchAction: null, dayVotes: {} },
     'night-wolf',
     events,
   );
@@ -118,7 +115,8 @@ function resolveWolves(s: WerewolfState, events: WerewolfEvent[]): WerewolfState
   let target: string | null = null;
   if (votes.length === 1) target = votes[0]!;
   else if (votes.length > 1 && votes[0] !== null && votes.every((v) => v === votes[0])) target = votes[0]!;
-  if (target !== null && (!isAlive(s, target) || roleOf(s, target) === 'wolf')) target = null;
+  // 狼人可以刀任意存活玩家，包括自己和队友（自刀）
+  if (target !== null && !isAlive(s, target)) target = null;
   return enterPhase({ ...s, wolfTarget: target }, 'night-seer', events);
 }
 
@@ -169,7 +167,9 @@ function parseAction(raw: unknown): WerewolfAction | null {
   switch (a.type) {
     case 'CONFIRM_ROLE':
     case 'END_DISCUSSION':
+    case 'SEER_PASS':
       return { type: a.type };
+    case 'WOLF_SELECT':
     case 'WOLF_VOTE':
     case 'DAY_VOTE':
       return a.targetId === null || isTarget(a.targetId) ? { type: a.type, targetId: a.targetId } : null;
@@ -187,10 +187,39 @@ function parseAction(raw: unknown): WerewolfAction | null {
 
 function isValidConfig(c: unknown): c is WerewolfConfig {
   if (typeof c !== 'object' || c === null) return false;
-  const x = c as Record<string, unknown>;
-  return (['nightPhaseMs', 'discussMs', 'voteMs', 'deadRolePhaseMs'] as const).every(
-    (k) => typeof x[k] === 'number' && Number.isFinite(x[k]) && (x[k] as number) >= 100 && (x[k] as number) <= 3_600_000,
-  );
+  const d = (c as { deadRoleDelayMs?: { min?: unknown; max?: unknown } }).deadRoleDelayMs;
+  const valid = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 600_000;
+  const reveal = (c as { seerRevealMs?: unknown }).seerRevealMs;
+  return !!d && valid(d.min) && valid(d.max) && d.min <= d.max && valid(reveal);
+}
+
+/**
+ * 神职出局后的假阶段停留时长：[min, max] 内随机。
+ * 由 Host 私有种子派生的盐 + phaseId 计算，客户端无法预测；同一局可重放。
+ */
+function deadRoleDelay(s: WerewolfState): number {
+  const { min, max } = s.config.deadRoleDelayMs;
+  let h = (2166136261 ^ s.delaySalt) >>> 0;
+  for (let i = 0; i < s.phaseId.length; i++) h = Math.imul(h ^ s.phaseId.charCodeAt(i), 16777619) >>> 0;
+  h = (h ^ (h >>> 16)) >>> 0;
+  h = Math.imul(h, 2246822507) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  return min + (h % (max - min + 1));
+}
+
+/** 只有已死亡的预言家 / 女巫的夜间阶段需要计时，其余阶段无超时 */
+/** 预言家可查验的目标：其他存活且未查验过的玩家 */
+function uncheckedTargets(s: WerewolfState, seer: string): string[] {
+  return alive(s).filter((id) => id !== seer && !(id in s.seerChecks));
+}
+
+/** 存活预言家完成查验后的结果展示期（仍处于 night-seer 阶段） */
+function seerRevealing(s: WerewolfState): boolean {
+  return s.phase === 'night-seer' && s.seerActed && aliveWith(s, 'seer').length > 0;
+}
+
+function deadRolePhase(s: WerewolfState): boolean {
+  return (s.phase === 'night-seer' && aliveWith(s, 'seer').length === 0) || (s.phase === 'night-witch' && aliveWith(s, 'witch').length === 0);
 }
 
 // ---- 投影 ---------------------------------------------------------------
@@ -221,22 +250,32 @@ export function projectView(s: WerewolfState, playerId: string): WerewolfPlayerV
   const finished = s.result !== null;
 
   let wolf: WerewolfPlayerView['wolf'] = null;
-  if (me?.role === 'wolf') {
+  // 出局玩家只接收公开信息，不再下发任何角色私密数据
+  if (me?.alive && me.role === 'wolf') {
     const teammates = order(s).filter((id) => id !== playerId && s.players[id]!.role === 'wolf');
     // 死狼人不接收新的私密行动信息
     const showNight = me.alive && s.phase.startsWith('night');
     wolf = {
       teammates,
       votes: showNight ? { ...s.wolfVotes } : null,
+      intents: showNight && s.phase === 'night-wolf' ? { ...s.wolfIntents } : null,
       target: showNight && s.phase !== 'night-wolf' ? s.wolfTarget : null,
     };
   }
 
   let seer: WerewolfPlayerView['seer'] = null;
-  if (me?.role === 'seer') seer = { checks: { ...s.seerChecks }, actedTonight: s.seerActed };
+  if (me?.alive && me.role === 'seer') {
+    const revealing = me.alive && seerRevealing(s) && s.seerLastCheck !== null;
+    seer = {
+      checks: { ...s.seerChecks },
+      actedTonight: s.seerActed,
+      lastCheck: revealing ? { targetId: s.seerLastCheck!, team: s.seerChecks[s.seerLastCheck!]! } : null,
+      revealMs: s.config.seerRevealMs,
+    };
+  }
 
   let witch: WerewolfPlayerView['witch'] = null;
-  if (me?.role === 'witch') {
+  if (me?.alive && me.role === 'witch') {
     const inWitchPhase = me.alive && s.phase === 'night-witch';
     // 本原型仅在解药可用时提供狼刀目标
     const wolfTarget = inWitchPhase && s.witchInventory.antidote ? s.wolfTarget : null;
@@ -256,6 +295,7 @@ export function projectView(s: WerewolfState, playerId: string): WerewolfPlayerV
     players,
     me: me ? { playerId, seat: s.seats[playerId]!, role: me.role, alive: me.alive } : null,
     confirmedCount: s.confirmed.length,
+    votedCount: s.phase === 'day-vote' ? Object.keys(s.dayVotes).length : 0,
     wolf,
     seer,
     witch,
@@ -331,9 +371,13 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
       seats[p.playerId] = p.seat;
       players[p.playerId] = { role: roles[i]!, alive: true };
     });
+    // 种子前 16 字节用于洗牌，16–19 字节派生延时盐
+    const b = (i: number): number => ctx.seed[i % ctx.seed.length] ?? 0;
+    const delaySalt = ((b(16) << 24) | (b(17) << 16) | (b(18) << 8) | b(19)) >>> 0;
     return {
       rulesVersion: RULES_VERSION,
       config: ctx.config,
+      delaySalt,
       round: 0,
       phase: 'reveal',
       phaseSeq: 0,
@@ -342,9 +386,11 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
       players,
       confirmed: [],
       wolfVotes: {},
+      wolfIntents: {},
       wolfTarget: null,
       seerChecks: {},
       seerActed: false,
+      seerLastCheck: null,
       witchInventory: { antidote: true, poison: true },
       witchAction: null,
       dayVotes: {},
@@ -358,7 +404,7 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
   validate(s, a, ctx: CommandContext): Validation {
     if (s.result) return no('GAME_OVER');
     const actor = ctx.actorId;
-    if (a.type === 'PHASE_TIMEOUT') return actor === 'system' ? ok : no('FORBIDDEN');
+    if (a.type === 'PHASE_TIMEOUT') return actor !== 'system' ? no('FORBIDDEN') : deadRolePhase(s) || seerRevealing(s) ? ok : no('WRONG_PHASE');
     if (a.type === 'END_DISCUSSION') return actor !== 'system' ? no('FORBIDDEN') : s.phase === 'day-discuss' ? ok : no('WRONG_PHASE');
     const me = actor === 'system' ? undefined : s.players[actor];
     if (!me) return no('NOT_A_PLAYER');
@@ -366,12 +412,13 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
       case 'CONFIRM_ROLE':
         if (s.phase !== 'reveal') return no('WRONG_PHASE');
         return s.confirmed.includes(actor) ? no('ALREADY_SUBMITTED') : ok;
+      case 'WOLF_SELECT':
       case 'WOLF_VOTE':
         if (s.phase !== 'night-wolf') return no('WRONG_PHASE');
         if (!me.alive) return no('DEAD');
         if (me.role !== 'wolf') return no('FORBIDDEN');
         if (actor in s.wolfVotes) return no('ALREADY_SUBMITTED');
-        if (a.targetId !== null && (!isAlive(s, a.targetId) || roleOf(s, a.targetId) === 'wolf')) return no('BAD_TARGET');
+        if (a.targetId !== null && !isAlive(s, a.targetId)) return no('BAD_TARGET');
         return ok;
       case 'SEER_CHECK':
         if (s.phase !== 'night-seer') return no('WRONG_PHASE');
@@ -379,6 +426,14 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
         if (me.role !== 'seer') return no('FORBIDDEN');
         if (s.seerActed) return no('ALREADY_SUBMITTED');
         if (a.targetId === actor || !isAlive(s, a.targetId)) return no('BAD_TARGET');
+        if (a.targetId in s.seerChecks) return no('ALREADY_CHECKED');
+        return ok;
+      case 'SEER_PASS':
+        if (s.phase !== 'night-seer') return no('WRONG_PHASE');
+        if (!me.alive) return no('DEAD');
+        if (me.role !== 'seer') return no('FORBIDDEN');
+        if (s.seerActed) return no('ALREADY_SUBMITTED');
+        if (uncheckedTargets(s, actor).length > 0) return no('HAS_TARGET');
         return ok;
       case 'WITCH_ACTION':
         if (s.phase !== 'night-witch') return no('WRONG_PHASE');
@@ -414,16 +469,23 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
         if (next.confirmed.length === Object.keys(s.players).length) next = startNight(next, 1, events);
         break;
       }
+      case 'WOLF_SELECT':
+        next = { ...s, wolfIntents: { ...s.wolfIntents, [actor]: a.targetId } };
+        break;
       case 'WOLF_VOTE': {
-        next = { ...s, wolfVotes: { ...s.wolfVotes, [actor]: a.targetId } };
+        next = { ...s, wolfVotes: { ...s.wolfVotes, [actor]: a.targetId }, wolfIntents: { ...s.wolfIntents, [actor]: a.targetId } };
         if (aliveWith(next, 'wolf').every((w) => w in next.wolfVotes)) next = resolveWolves(next, events);
         break;
       }
       case 'SEER_CHECK': {
         const team = teamOf(s.players[a.targetId]!.role);
-        next = enterPhase({ ...s, seerActed: true, seerChecks: { ...s.seerChecks, [a.targetId]: team } }, 'night-witch', events);
+        // 不立即进入女巫阶段：先给预言家展示结果，seerRevealMs 后由 Host 计时推进
+        next = { ...s, seerActed: true, seerLastCheck: a.targetId, seerChecks: { ...s.seerChecks, [a.targetId]: team } };
         break;
       }
+      case 'SEER_PASS':
+        next = { ...s, seerActed: true, seerLastCheck: null };
+        break;
       case 'WITCH_ACTION': {
         const inv = { ...s.witchInventory };
         if (a.action === 'save') inv.antidote = false;
@@ -441,26 +503,9 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
         break;
       }
       case 'PHASE_TIMEOUT':
-        // 超时未提交：狼票、白天票视为弃权；查验与女巫视为放弃
-        switch (s.phase) {
-          case 'night-wolf':
-            next = resolveWolves(s, events);
-            break;
-          case 'night-seer':
-            next = enterPhase({ ...s, seerActed: true }, 'night-witch', events);
-            break;
-          case 'night-witch':
-            next = resolveNight({ ...s, witchAction: s.witchAction ?? { kind: 'pass' } }, events);
-            break;
-          case 'day-discuss':
-            next = enterPhase(s, 'day-vote', events);
-            break;
-          case 'day-vote':
-            next = resolveDay(s, events);
-            break;
-          default:
-            break;
-        }
+        // 已死亡角色的夜间阶段：隐藏延时结束后推进
+        if (s.phase === 'night-seer') next = enterPhase({ ...s, seerActed: true }, 'night-witch', events);
+        else if (s.phase === 'night-witch') next = resolveNight({ ...s, witchAction: { kind: 'pass' } }, events);
         break;
     }
     return { state: next, events };
@@ -469,23 +514,13 @@ export const werewolfRules: GamePlugin<WerewolfState, WerewolfAction, WerewolfPl
   project: projectView,
   getResult: (s) => s.result,
 
-  timer(s) {
-    const c = s.config;
-    switch (s.phase) {
-      case 'night-wolf':
-        return { phaseId: s.phaseId, ms: c.nightPhaseMs };
-      case 'night-seer':
-        return { phaseId: s.phaseId, ms: aliveWith(s, 'seer').length ? c.nightPhaseMs : c.deadRolePhaseMs };
-      case 'night-witch':
-        return { phaseId: s.phaseId, ms: aliveWith(s, 'witch').length ? c.nightPhaseMs : c.deadRolePhaseMs };
-      case 'day-discuss':
-        return { phaseId: s.phaseId, ms: c.discussMs };
-      case 'day-vote':
-        return { phaseId: s.phaseId, ms: c.voteMs };
-      default:
-        return null;
-    }
-  },
+  // 两种计时都隐藏：不下发客户端，避免暴露预言家是否存活、是否已查验
+  timer: (s) =>
+    deadRolePhase(s)
+      ? { phaseId: s.phaseId, ms: deadRoleDelay(s), hidden: true }
+      : seerRevealing(s)
+        ? { phaseId: s.phaseId, ms: s.config.seerRevealMs, hidden: true }
+        : null,
   timeoutCommand: () => ({ type: 'PHASE_TIMEOUT' }),
   announce,
 };

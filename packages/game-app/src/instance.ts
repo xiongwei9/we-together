@@ -6,20 +6,35 @@ import {
   createIdFactory,
   createPlayerClient,
   createReliableNode,
+  createRoomBrowser,
   defaultAddressCodec,
+  MAX_PASSWORD,
   type AddressCodec,
   type ClientState,
   type DeviceNet,
+  type DiscoveredRoom,
   type Endpoint,
   type HostAuthority,
   type IdFactory,
   type PlayerClient,
   type ReliableNode,
   type RoomAction,
+  type RoomBrowser,
   type Transport,
 } from '@we/multiplayer';
 import type { GamePluginDefinition, GameSceneContext } from './contract';
-import { errorText, playerName, renderClosed, renderHome, renderJoin, renderLobby, wrapGame, type AppActions, type AppModel } from './scenes';
+import {
+  errorText,
+  playerName,
+  renderClosed,
+  renderHome,
+  renderJoin,
+  renderLobby,
+  renderManualJoin,
+  wrapGame,
+  type AppActions,
+  type AppModel,
+} from './scenes';
 
 /**
  * 可重入的游戏实例工厂（设计 §13.3）：微信入口创建一次，Web 模拟器创建 N 次。
@@ -44,7 +59,9 @@ export interface InstanceStatus {
   bootError: string | null;
   endpoint: Endpoint | null;
   isHost: boolean;
-  hostInfo: { address: string | null; invite: string } | null;
+  hostInfo: { address: string | null; password: string | null } | null;
+  /** 局域网发现的房间（仅在「加入房间」页搜索时更新） */
+  rooms: readonly DiscoveredRoom[];
   client: ClientState;
   visible: boolean;
   muted: boolean;
@@ -52,8 +69,14 @@ export interface InstanceStatus {
 
 /** 与 UI 按钮相同的玩家操作 API；模拟器批量操作也只能通过这里 */
 interface GameActions {
-  createRoom(nickname?: string): Promise<boolean>;
-  joinRoom(address: string, invite: string, nickname?: string): Promise<boolean>;
+  /** password 为 undefined 时弹出可选密码输入；传空串表示不设密码 */
+  createRoom(options?: { nickname?: string; password?: string }): Promise<boolean>;
+  searchRooms(): void;
+  stopSearch(): void;
+  /** 加入局域网发现的房间；需要密码且未提供时弹出输入 */
+  joinDiscovered(roomKey: string, options?: { password?: string; nickname?: string }): Promise<boolean>;
+  /** 兜底：按地址手动加入 */
+  joinRoom(address: string, password?: string, nickname?: string): Promise<boolean>;
   resumeSaved(): Promise<boolean>;
   setReady(ready: boolean): void;
   startMatch(): void;
@@ -92,6 +115,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
   let net: DeviceNet | null = null;
   let ids: IdFactory | null = null;
   let client: PlayerClient | null = null;
+  let browser: RoomBrowser | null = null;
   let host: HostAuthority | null = null;
   let endpoint: Endpoint | null = null;
   let started = false;
@@ -101,6 +125,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
   const offs: Unsubscribe[] = [];
   const listeners = new Set<() => void>();
   let local: Record<string, unknown> = {};
+  let tickRequested = false;
   let localPhase = '';
 
   const emptyClient: ClientState = {
@@ -121,7 +146,9 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     rulesVersion: game.rules.rulesVersion,
     nickname: options.defaultNickname ?? '',
     route: 'home',
-    form: { address: '', invite: '' },
+    form: { address: '', password: '' },
+    rooms: [],
+    searching: false,
     busy: null,
     bootError: null,
     saved: null,
@@ -162,11 +189,18 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     model.hostInfo = null;
   };
 
-  const createRoom = async (nickname?: string): Promise<boolean> => {
+  const createRoom = async (opts: { nickname?: string; password?: string } = {}): Promise<boolean> => {
     if (!client || !net || !ids || model.busy) return false;
-    if (nickname) patch({ nickname });
+    if (opts.nickname) patch({ nickname: opts.nickname });
     const nick = await ensureNickname();
     if (!nick) return false;
+    let password = opts.password;
+    if (password === undefined) {
+      const input = await platform.promptText({ title: '房间密码（可选，留空则不设密码）', maxLength: MAX_PASSWORD, placeholder: '不填则任何同一 Wi-Fi 的玩家都可加入' });
+      if (input === null) return false;
+      password = input;
+    }
+    stopSearch();
     patch({ busy: '正在创建房间…' });
     try {
       disposeHost();
@@ -178,6 +212,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         plugin: game.rules,
         config: options.gameConfig,
         address: endpoint ? codec.format(endpoint) : null,
+        password,
         debug: options.debug,
         onAnnounce: (t) => platform.audio.announce(t),
       });
@@ -186,8 +221,8 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         if (host === h) platform.keepScreenOn(false);
       });
       platform.keepScreenOn(true);
-      model.hostInfo = { address: h.address, invite: h.invite };
-      const ok = await client.join({ link: net.loopbackToHost, hostAddress: h.address ?? '', invite: h.invite, nickname: nick });
+      model.hostInfo = { address: h.address, password: h.password };
+      const ok = await client.join({ link: net.loopbackToHost, hostAddress: h.address ?? '', password: h.password ?? '', nickname: nick });
       if (!ok) disposeHost();
       patch({ busy: null });
       return ok;
@@ -199,22 +234,56 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     }
   };
 
-  const joinRoom = async (address: string, invite: string, nickname?: string): Promise<boolean> => {
+  const joinEndpoint = async (ep: Endpoint, password: string, nickname?: string): Promise<boolean> => {
     if (!client || !net) return false;
     if (nickname) patch({ nickname });
     const nick = await ensureNickname();
     if (!nick) return false;
+    disposeHost();
+    const ok = await client.join({ link: net.remote(ep), hostAddress: codec.format(ep), password, nickname: nick });
+    if (ok) {
+      stopSearch();
+      patch({ route: 'home' });
+    }
+    return ok;
+  };
+
+  const joinRoom = async (address: string, password = '', nickname?: string): Promise<boolean> => {
     const ep = codec.parse(address);
     if (!ep) {
       ui?.toast('房间地址格式不正确');
       return false;
     }
-    disposeHost();
-    patch({ form: { address, invite } });
-    const ok = await client.join({ link: net.remote(ep), hostAddress: codec.format(ep), invite, nickname: nick });
-    if (ok) patch({ route: 'home' });
-    return ok;
+    patch({ form: { address, password } });
+    return joinEndpoint(ep, password, nickname);
   };
+
+  const joinDiscovered = async (roomKey: string, opts: { password?: string; nickname?: string } = {}): Promise<boolean> => {
+    const room = model.rooms.find((r) => r.key === roomKey);
+    if (!room) {
+      ui?.toast('房间已不可见，请稍后重试');
+      return false;
+    }
+    let password = opts.password ?? '';
+    if (room.hasPassword && opts.password === undefined) {
+      const input = await platform.promptText({ title: `输入「${room.hostName} 的房间」密码`, maxLength: MAX_PASSWORD });
+      if (input === null) return false;
+      password = input;
+    }
+    return joinEndpoint(room.endpoint, password, opts.nickname);
+  };
+
+  function searchRooms(): void {
+    if (!browser) return;
+    browser.start();
+    patch({ searching: true });
+  }
+
+  function stopSearch(): void {
+    if (!browser?.searching) return;
+    browser.stop();
+    patch({ searching: false });
+  }
 
   const resumeSaved = async (): Promise<boolean> => {
     if (!client || !model.saved) return false;
@@ -248,6 +317,9 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
 
   const actions: GameActions = {
     createRoom,
+    searchRooms,
+    stopSearch,
+    joinDiscovered,
     joinRoom,
     resumeSaved,
     setReady: (ready) => roomCommand({ kind: 'ready', ready }),
@@ -263,13 +335,26 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
   const appActions: AppActions = {
     editNickname: () => void editNickname(),
     createRoom: () => void createRoom(),
-    openJoin: () => patch({ route: 'join' }),
-    cancelJoin: () => patch({ route: 'home' }),
+    openJoin: () => {
+      patch({ route: 'join' });
+      searchRooms();
+    },
+    cancelJoin: () => {
+      stopSearch();
+      patch({ route: 'home' });
+    },
+    joinDiscovered: (room) => void joinDiscovered(room.key),
+    openManual: () => {
+      stopSearch();
+      patch({ route: 'manual' });
+    },
     editAddress: () =>
       void prompt('房间地址（IP:端口）', model.form.address, false, 64).then((v) => v !== null && patch({ form: { ...model.form, address: v.trim() } })),
-    editInvite: () =>
-      void prompt('邀请码', model.form.invite, true, 6).then((v) => v !== null && patch({ form: { ...model.form, invite: v.trim() } })),
-    submitJoin: () => void joinRoom(model.form.address, model.form.invite),
+    editPassword: () =>
+      void prompt('房间密码（无密码可留空）', model.form.password, false, MAX_PASSWORD).then(
+        (v) => v !== null && patch({ form: { ...model.form, password: v } }),
+      ),
+    submitManualJoin: () => void joinRoom(model.form.address, model.form.password),
     resumeSaved: () => void resumeSaved(),
     discardSaved: () => {
       platform.storage.remove('session').catch(() => undefined);
@@ -332,6 +417,10 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         return p ? playerName(p) : '未知玩家';
       },
       safeArea: safe(),
+      now: platform.clock.now(),
+      keepTicking: () => {
+        tickRequested = true;
+      },
     };
   };
 
@@ -348,12 +437,15 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         }
         const ctx = gameContext();
         if (ctx) {
-          ui?.setTicking(ctx.remainingMs !== null && !ctx.paused);
-          return wrapGame(game.presentation.render(ctx), model, appActions, c.room);
+          tickRequested = false;
+          const node = game.presentation.render(ctx);
+          ui?.setTicking((ctx.remainingMs !== null && !ctx.paused) || tickRequested);
+          return wrapGame(node, model, appActions, c.room);
         }
         return renderLobby(model, appActions, s);
       }
       ui?.setTicking(false);
+      if (model.route === 'manual') return renderManualJoin(model, appActions, s);
       if (model.route === 'join' || c.phase === 'joining') return renderJoin(model, appActions, s);
       return renderHome(model, appActions, s);
     },
@@ -369,6 +461,8 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     ui?.setVisible(v);
     client?.setVisible(v);
     host?.setHostVisible(v);
+    if (!v) browser?.stop();
+    else if (model.route === 'join' && model.client.phase !== 'in-room') browser?.start();
     notify();
   };
 
@@ -393,7 +487,10 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       reliable = createReliableNode({ transport, clock: platform.clock, nextMessageId: () => ids!.next('m') });
       net = createDeviceNet({ reliable, clock: platform.clock });
       client = createPlayerClient({ net, clock: platform.clock, ids, storage: platform.storage, gameId: game.rules.id });
+      const b = createRoomBrowser({ net, clock: platform.clock, ids, gameId: game.rules.id });
+      browser = b;
       offs.push(
+        b.subscribe(() => patch({ rooms: b.rooms(), searching: b.searching })),
         client.subscribe((s) => {
           const prev = model.client;
           model.client = s;
@@ -422,6 +519,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       endpoint,
       isHost: host !== null,
       hostInfo: model.hostInfo,
+      rooms: model.rooms,
       client: model.client,
       visible,
       muted,
@@ -437,6 +535,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       offs.forEach((off) => off());
       host?.dispose();
       host = null;
+      browser?.dispose();
       client?.dispose();
       net?.dispose();
       reliable?.dispose();

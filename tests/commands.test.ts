@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Envelope, PlayerSnapshot } from '@we/multiplayer';
-import { createHeadlessWorld, type HeadlessDevice, type HeadlessWorld } from '@we/testing';
-import { werewolfRules, type WerewolfState } from '@we/werewolf/rules';
+import { createHeadlessWorld, createSeededRng, type HeadlessDevice, type HeadlessWorld } from '@we/testing';
+import { chooseBotAction, werewolfRules, type WerewolfPlayerView, type WerewolfState } from '@we/werewolf/rules';
 
 async function started(world: HeadlessWorld): Promise<HeadlessDevice[]> {
   const ds: HeadlessDevice[] = [];
@@ -9,7 +9,7 @@ async function started(world: HeadlessWorld): Promise<HeadlessDevice[]> {
   const host = await world.createHost(ds[0]!, werewolfRules);
   // 依次加入，座位与节点一致
   for (const d of ds.slice(1)) {
-    const p = d.client.join({ link: d.net.remote(ds[0]!.endpoint), hostAddress: host.address!, invite: host.invite, nickname: d.nodeId });
+    const p = d.client.join({ link: d.net.remote(ds[0]!.endpoint), hostAddress: host.address!, password: '', nickname: d.nodeId });
     await world.run(300);
     expect(await p).toBe(true);
   }
@@ -86,8 +86,16 @@ describe('命令语义', () => {
     const [h] = ds;
     ds.forEach((d) => d.client.gameCommand({ type: 'CONFIRM_ROLE' }));
     await world.run(1000);
-    // 夜间全部超时（默认 30s）进入白天讨论
-    await world.run(95_000);
+    // 回合内无超时：夜间各角色由 Bot 行动后进入白天讨论
+    const rng = createSeededRng(5);
+    for (let i = 0; i < 20 && state(h!).phase !== 'day-discuss'; i++) {
+      for (const d of ds) {
+        const a = chooseBotAction(d.client.getState().snapshot!.view as WerewolfPlayerView, rng);
+        // 女巫不用药，保证本测试进入白天而不是首夜即分出胜负
+        if (a) d.client.gameCommand(a.type === 'WITCH_ACTION' ? { type: 'WITCH_ACTION', action: 'pass' } : a);
+      }
+      await world.run(500);
+    }
     expect(state(h!).phase).toBe('day-discuss');
     const nonHost = ds[3]!;
     const id = nonHost.client.gameCommand({ type: 'END_DISCUSSION' });

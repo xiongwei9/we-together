@@ -40,7 +40,7 @@ export interface HeadlessWorld {
   run(ms: number, step?: number): Promise<void>;
   flush(): Promise<void>;
   createDevice(nodeId: string, storage?: ReturnType<typeof createMemoryStorage>): Promise<HeadlessDevice>;
-  createHost(device: HeadlessDevice, plugin: AnyGamePlugin, options?: { config?: unknown; nickname?: string }): Promise<HostAuthority>;
+  createHost(device: HeadlessDevice, plugin: AnyGamePlugin, options?: { config?: unknown; nickname?: string; password?: string }): Promise<HostAuthority>;
 }
 
 export function createHeadlessWorld(options: { seed: number; faults?: NetworkFaultConfig; networkId?: string }): HeadlessWorld {
@@ -100,6 +100,7 @@ export function createHeadlessWorld(options: { seed: number; faults?: NetworkFau
         ids: device.ids,
         plugin,
         config: hostOptions.config,
+        password: hostOptions.password,
         address: defaultAddressCodec.format(device.endpoint),
         debug: true,
       });
@@ -107,7 +108,7 @@ export function createHeadlessWorld(options: { seed: number; faults?: NetworkFau
       const joined = device.client.join({
         link: device.net.loopbackToHost,
         hostAddress: host.address ?? '',
-        invite: host.invite,
+        password: host.password ?? '',
         nickname: hostOptions.nickname ?? 'Host',
       });
       await run(50);

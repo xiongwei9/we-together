@@ -29,6 +29,8 @@ interface PhaseTimer {
   /** 当前阶段 id；阶段变化后旧定时器作废 */
   phaseId: string;
   ms: number;
+  /** 隐藏计时：不下发给客户端（例如死亡角色阶段的固定节奏，避免泄露存活信息） */
+  hidden?: boolean;
 }
 
 /**
@@ -51,7 +53,10 @@ export interface GamePlugin<State, Command, View, Config, Event, Result> {
   reduce(state: State, command: Command, ctx: CommandContext): Transition<State, Event>;
   project(state: State, playerId: string): View;
   getResult(state: State): Result | null;
-  /** 当前阶段需要的 Host 计时器；超时发出 timeoutCommand */
+  /**
+   * 当前需要的 Host 计时器（null 表示无超时，只靠玩家操作推进）；到时发出 timeoutCommand。
+   * 阶段变化或同一阶段内由 null 变为非 null 时 Host 会重新计时。
+   */
   timer(state: State): PhaseTimer | null;
   timeoutCommand(state: State): Command;
   /** 当前状态下可以公开播报的文本（Host 播放，绝不包含私密信息） */

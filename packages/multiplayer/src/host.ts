@@ -2,8 +2,9 @@ import type { Clock, RandomSource, Unsubscribe } from '@we/platform';
 import { cloneJson } from './codec';
 import type { AnyGamePlugin } from './contract';
 import { LOOPBACK_KEY, type DeviceNet, type Link } from './device-net';
-import { createInviteCode, type IdFactory } from './ids';
+import type { IdFactory } from './ids';
 import {
+  MAX_PASSWORD,
   PROTOCOL_VERSION,
   parseClientEnvelope,
   sanitizeNickname,
@@ -31,10 +32,11 @@ interface HeartbeatConfig {
 
 const DEFAULT_HEARTBEAT: HeartbeatConfig = { checkMs: 1000, suspectMs: 6000, lostMs: 10000 };
 const ROOM_CMD_CACHE_MAX = 500;
+const DISCOVER_MIN_INTERVAL_MS = 300;
 
 export interface HostInspection {
   room: RoomView;
-  invite: string;
+  password: string | null;
   paused: PauseInfo | null;
   sessions: { playerId: string; link: string; epoch: string; lastSeenAgoMs: number; health: 'ok' | 'suspect' | 'lost' }[];
   match: { matchId: string; version: number; phaseId: string; timerRemainingMs: number | null; state: unknown } | null;
@@ -42,7 +44,9 @@ export interface HostInspection {
 
 export interface HostAuthority {
   readonly roomId: string;
-  readonly invite: string;
+  /** 可选房间密码（展示给房主告知朋友）；null 表示无密码 */
+  readonly password: string | null;
+  /** 手动加入的兜底地址（局域网广播不可用时） */
   readonly address: string | null;
   /** Host 设备切后台：暂停规则时间，恢复后需房主手动继续 */
   setHostVisible(visible: boolean): void;
@@ -63,6 +67,8 @@ interface HostOptions {
   plugin: AnyGamePlugin;
   config?: unknown;
   address: string | null;
+  /** 可选房间密码；空串视为无密码 */
+  password?: string;
   debug?: boolean;
   heartbeat?: Partial<HeartbeatConfig>;
   onAnnounce?: (text: string) => void;
@@ -83,7 +89,7 @@ interface Match {
   matchId: string;
   state: unknown;
   version: number;
-  timer: { phaseId: string; totalMs: number; deadline: number; remaining: number | null; cancel: Unsubscribe | null } | null;
+  timer: { phaseId: string; totalMs: number; hidden: boolean; deadline: number; remaining: number | null; cancel: Unsubscribe | null } | null;
   commandCache: Map<string, { hash: string; ok: boolean; code?: string }>;
 }
 
@@ -97,7 +103,8 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
   if (!configCheck.ok) throw new Error(`invalid game config: ${configCheck.code}`);
 
   const roomId = ids.next('r');
-  const invite = await createInviteCode(random);
+  const password = options.password?.trim().slice(0, MAX_PASSWORD) || null;
+  const discoverSeen = new Map<string, number>();
 
   const room: {
     hostId: string;
@@ -182,12 +189,15 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     return { remainingMs: remaining, totalMs: m.timer.totalMs };
   };
 
+  /** 下发给玩家的计时：隐藏计时不出现在快照中 */
+  const visibleTimer = (m: Match): PlayerSnapshot['timer'] => (m.timer?.hidden ? null : timerInfo(m));
+
   const snapshotFor = (m: Match, playerId: string): PlayerSnapshot => ({
     matchId: m.matchId,
     version: m.version,
     phaseId: plugin.phaseId(m.state),
     view: plugin.project(m.state, playerId),
-    timer: timerInfo(m),
+    timer: visibleTimer(m),
     paused: pauseInfo(),
   });
 
@@ -208,8 +218,8 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     m.timer = null;
   };
 
-  const armTimer = (m: Match, phaseId: string, ms: number, totalMs: number): void => {
-    const timer = { phaseId, totalMs, deadline: clock.now() + ms, remaining: null as number | null, cancel: null as Unsubscribe | null };
+  const armTimer = (m: Match, phaseId: string, ms: number, totalMs: number, hidden: boolean): void => {
+    const timer = { phaseId, totalMs, hidden, deadline: clock.now() + ms, remaining: null as number | null, cancel: null as Unsubscribe | null };
     m.timer = timer;
     if (pauseReasons.size > 0) {
       timer.remaining = ms;
@@ -222,7 +232,7 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     clearTimer(m);
     if (room.status !== 'playing') return;
     const t = plugin.timer(m.state);
-    if (t) armTimer(m, t.phaseId, t.ms, t.ms);
+    if (t) armTimer(m, t.phaseId, t.ms, t.ms, t.hidden ?? false);
   };
 
   const onTimer = (m: Match, phaseId: string): void => {
@@ -245,7 +255,7 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
       m.timer.cancel?.();
       m.timer.cancel = null;
     } else if (before && !after && m.timer && m.timer.remaining !== null) {
-      armTimer(m, m.timer.phaseId, m.timer.remaining, m.timer.totalMs);
+      armTimer(m, m.timer.phaseId, m.timer.remaining, m.timer.totalMs, m.timer.hidden);
     }
     m.version++;
     broadcastSnapshots();
@@ -273,7 +283,8 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
       pauseReasons.clear();
       clearTimer(m);
       broadcastRoom();
-    } else if (plugin.phaseId(m.state) !== phaseBefore) {
+    } else if (plugin.phaseId(m.state) !== phaseBefore || (m.timer === null) !== (plugin.timer(m.state) === null)) {
+      // 阶段变化，或同一阶段内计时器出现 / 消失（例如预言家查验后的结果展示）
       scheduleTimer(m);
     }
     broadcastSnapshots();
@@ -429,7 +440,7 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     if (env.payload.protocol !== PROTOCOL_VERSION) return reject('PROTOCOL');
     if (env.payload.gameId !== plugin.id) return reject('WRONG_GAME');
     if (room.status === 'closed') return reject('ROOM_CLOSED');
-    if (env.payload.invite !== invite) return reject('BAD_INVITE');
+    if (password !== null && env.payload.password !== password) return reject('BAD_PASSWORD');
     if (room.status !== 'lobby') return reject('GAME_IN_PROGRESS');
     const nickname = sanitizeNickname(env.payload.nickname);
     if (!nickname) return reject('BAD_NICKNAME');
@@ -504,10 +515,43 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     }
   };
 
+  /** 房间发现：对广播 DISCOVER 单播回复公开房间信息；按来源限频 */
+  const handleDiscover = (env: ClientEnvelope & { type: 'DISCOVER' }, reply: Link): void => {
+    const hostPlayer = room.players.find((p) => p.isHost);
+    if (!hostPlayer || env.payload.protocol !== PROTOCOL_VERSION) return;
+    if (env.payload.gameId && env.payload.gameId !== plugin.id) return;
+    const now = clock.now();
+    if (now - (discoverSeen.get(reply.key) ?? -Infinity) < DISCOVER_MIN_INTERVAL_MS) return;
+    if (discoverSeen.size > 256) discoverSeen.clear();
+    discoverSeen.set(reply.key, now);
+    sendTo(
+      reply,
+      '',
+      '',
+      {
+        type: 'ROOM_INFO',
+        payload: {
+          nonce: env.payload.nonce,
+          protocol: PROTOCOL_VERSION,
+          roomId,
+          gameId: plugin.id,
+          gameTitle: plugin.title,
+          hostName: hostPlayer.nickname,
+          players: room.players.length,
+          capacity: plugin.playerCount.max,
+          status: room.status,
+          hasPassword: password !== null,
+        },
+      },
+      false,
+    );
+  };
+
   const handleInbound = async (raw: unknown, reply: Link): Promise<void> => {
     if (disposed || room.status === 'closed') return;
     const env = parseClientEnvelope(raw);
     if (!env) return;
+    if (env.type === 'DISCOVER') return handleDiscover(env, reply);
     if (env.type === 'JOIN_REQUEST') return handleJoin(env, reply);
     if (env.roomId !== roomId) return;
     if (env.type === 'RESUME_REQUEST') return handleResume(env, reply);
@@ -578,7 +622,7 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
 
   return {
     roomId,
-    invite,
+    password,
     address: options.address,
     setHostVisible(visible) {
       enqueue(() => {
@@ -602,7 +646,7 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
       const now = clock.now();
       return cloneJson<HostInspection>({
         room: roomView(),
-        invite,
+        password,
         paused: pauseInfo(),
         sessions: [...sessions.values()].map((s) => ({
           playerId: s.playerId,

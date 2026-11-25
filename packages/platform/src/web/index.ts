@@ -245,7 +245,7 @@ export function createWebPlatform(options: WebPlatformOptions): Platform {
         wrap.onpointerdown = (e) => {
           if (e.target === wrap) finish(null);
         };
-        setTimeout(() => input.focus(), 0);
+        setTimeout(() => input.focus({ preventScroll: true }), 0);
       });
     },
     keepScreenOn() {

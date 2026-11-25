@@ -181,6 +181,11 @@ export function createVirtualNetwork(options: {
           if (!started) throw new Error('transport not started');
           route(nodeId, to, bytes);
         },
+        async broadcast(bytes) {
+          if (!started) throw new Error('transport not started');
+          // 广播展开为逐 endpoint 的独立投递，同样经过故障注入；不跨 networkId
+          for (const target of [...nodes.keys()]) if (target !== nodeId) route(nodeId, { kind: 'memory', networkId, nodeId: target }, bytes);
+        },
         onPacket(handler) {
           packetHandlers.add(handler);
           return () => packetHandlers.delete(handler);

@@ -19,6 +19,10 @@ export interface GameSceneContext<View = unknown> {
   setLocal(patch: Record<string, unknown>): void;
   nameOf(playerId: string): string;
   safeArea: { top: number; bottom: number };
+  /** 本地单调时钟（仅用于显示，例如本地倒计时） */
+  now: number;
+  /** 本次渲染需要周期性重绘（本地倒计时、动画）；每次渲染需重新声明 */
+  keepTicking(): void;
 }
 
 export interface GamePresentation {

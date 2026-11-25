@@ -60,6 +60,8 @@ interface ReliableStats {
 
 export interface ReliableNode {
   send(to: Endpoint, bytes: Uint8Array, options: SendOptions): string;
+  /** 不可靠广播（房间发现）；接收方按普通不可靠消息交付 */
+  broadcast(bytes: Uint8Array): void;
   onMessage(handler: (bytes: Uint8Array, from: Endpoint) => void): Unsubscribe;
   stats(): ReliableStats;
   dispose(): void;
@@ -191,13 +193,11 @@ export function createReliableNode(options: {
     rawSend(to, buf);
   }
 
-  function send(to: Endpoint, bytes: Uint8Array, opts: SendOptions): string {
-    const messageId = nextMessageId();
+  function fragment(messageId: string, bytes: Uint8Array, kind: number): Uint8Array[] {
     if (bytes.length > cfg.maxMessageBytes) throw new Error(`message too large: ${bytes.length}`);
     const idLen = utf8Encode(messageId).length;
     const chunkSize = cfg.maxDatagram - DATA_FIXED_HEADER - idLen;
     const partCount = Math.max(1, Math.ceil(bytes.length / chunkSize));
-    const kind = opts.reliable ? KIND_DATA : KIND_DATA_UNRELIABLE;
     const datagrams: Uint8Array[] = [];
     for (let i = 0; i < partCount; i++) {
       const chunk = bytes.subarray(i * chunkSize, Math.min(bytes.length, (i + 1) * chunkSize));
@@ -208,6 +208,20 @@ export function createReliableNode(options: {
       buf.set(chunk, offset + 8);
       datagrams.push(buf);
     }
+    return datagrams;
+  }
+
+  function broadcast(bytes: Uint8Array): void {
+    if (disposed) return;
+    for (const d of fragment(nextMessageId(), bytes, KIND_DATA_UNRELIABLE)) {
+      stats.sentDatagrams++;
+      transport.broadcast(d).catch(() => undefined);
+    }
+  }
+
+  function send(to: Endpoint, bytes: Uint8Array, opts: SendOptions): string {
+    const messageId = nextMessageId();
+    const datagrams = fragment(messageId, bytes, opts.reliable ? KIND_DATA : KIND_DATA_UNRELIABLE);
     if (!opts.reliable) {
       datagrams.forEach((d) => rawSend(to, d));
       return messageId;
@@ -377,6 +391,7 @@ export function createReliableNode(options: {
 
   return {
     send,
+    broadcast,
     onMessage(handler) {
       handlers.add(handler);
       return () => handlers.delete(handler);

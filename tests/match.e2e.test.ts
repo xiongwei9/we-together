@@ -3,14 +3,14 @@ import { defaultAddressCodec, type HostInspection } from '@we/multiplayer';
 import { createHeadlessWorld, createSeededRng, NETWORK_PRESETS, type HeadlessDevice, type HeadlessWorld } from '@we/testing';
 import { chooseBotAction, werewolfRules, type WerewolfPlayerView, type WerewolfState } from '@we/werewolf/rules';
 
-const FAST = { nightPhaseMs: 3000, discussMs: 3000, voteMs: 3000, deadRolePhaseMs: 2000 };
+const FAST = { deadRoleDelayMs: { min: 1000, max: 2000 }, seerRevealMs: 1000 };
 
 async function setupRoom(world: HeadlessWorld, count = 6): Promise<HeadlessDevice[]> {
   const devices: HeadlessDevice[] = [];
   for (let i = 1; i <= count; i++) devices.push(await world.createDevice(`p${i}`));
   const host = await world.createHost(devices[0]!, werewolfRules, { config: FAST, nickname: '房主' });
   const pending = devices.slice(1).map((d, i) =>
-    d.client.join({ link: d.net.remote(devices[0]!.endpoint), hostAddress: host.address!, invite: host.invite, nickname: `玩家${i + 2}` }),
+    d.client.join({ link: d.net.remote(devices[0]!.endpoint), hostAddress: host.address!, password: '', nickname: `玩家${i + 2}` }),
   );
   await world.run(3000);
   expect(await Promise.all(pending)).toEqual(devices.slice(1).map(() => true));
@@ -29,19 +29,20 @@ const hostState = (d: HeadlessDevice): WerewolfState => (d.host!.inspect().match
 
 async function playToEnd(world: HeadlessWorld, devices: HeadlessDevice[], seed: number, maxMs = 600_000): Promise<HostInspection> {
   const rng = createSeededRng(seed);
-  const acted = new Set<string>();
+  // 回合内没有超时：每个玩家每阶段行动一次；被拒绝或投递失败时重新行动
+  const acted = new Map<string, string>();
   for (let t = 0; t < maxMs; t += 250) {
     for (const d of devices) {
       const s = d.client.getState();
       const v = viewOf(d);
       if (!v || !s.snapshot || s.snapshot.paused) continue;
+      // 回合内无倒计时；已死亡角色阶段的隐藏延时也不得下发
+      expect(s.snapshot.timer).toBeNull();
       const key = `${d.nodeId}:${s.snapshot.phaseId}`;
-      if (acted.has(key)) continue;
+      const prev = s.commands.find((c) => c.commandId === acted.get(key));
+      if (prev && (prev.status === 'pending' || prev.status === 'ok')) continue;
       const action = chooseBotAction(v, rng);
-      if (action) {
-        acted.add(key);
-        d.client.gameCommand(action);
-      }
+      if (action) acted.set(key, d.client.gameCommand(action));
     }
     // Host 结束讨论（公共控制）
     const hv = viewOf(devices[0]!);
@@ -146,20 +147,21 @@ describe('六人狼人杀完整对局（VirtualNetwork）', () => {
     expect(newEpoch).not.toBe(oldEpoch);
   });
 
-  it('游戏中拒绝新成员；错误邀请码被拒绝', async () => {
+  it('满房与游戏中拒绝新成员', async () => {
     const world = createHeadlessWorld({ seed: 7 });
     const devices = await setupRoom(world);
     const extra = await world.createDevice('p7');
     const host = devices[0]!.host!;
-    const full = extra.client.join({ link: extra.net.remote(devices[0]!.endpoint), hostAddress: '', invite: host.invite, nickname: 'x' });
+    const full = extra.client.join({ link: extra.net.remote(devices[0]!.endpoint), hostAddress: '', password: '', nickname: 'x' });
     await world.run(2000);
     expect(await full).toBe(false);
     expect(extra.client.getState().error).toBe('ROOM_FULL');
     await readyAndStart(world, devices);
-    const bad = extra.client.join({ link: extra.net.remote(devices[0]!.endpoint), hostAddress: '', invite: '000000', nickname: 'x' });
+    const late = extra.client.join({ link: extra.net.remote(devices[0]!.endpoint), hostAddress: '', password: '', nickname: 'x' });
     await world.run(2000);
-    expect(await bad).toBe(false);
-    expect(extra.client.getState().error).toBe(host.invite === '000000' ? 'GAME_IN_PROGRESS' : 'BAD_INVITE');
+    expect(await late).toBe(false);
+    expect(extra.client.getState().error).toBe('GAME_IN_PROGRESS');
+    expect(host.inspect().room.players).toHaveLength(6);
   });
 
   it('重开：新 matchId，清空上一局身份与命令', async () => {
@@ -187,7 +189,7 @@ describe('六人狼人杀完整对局（VirtualNetwork）', () => {
     await a.createHost(da, werewolfRules);
     const b = createHeadlessWorld({ seed: 10, networkId: 'sim-b' });
     const db = await b.createDevice('p2');
-    const joined = db.client.join({ link: db.net.remote(da.endpoint), hostAddress: '', invite: da.host!.invite, nickname: 'x' });
+    const joined = db.client.join({ link: db.net.remote(da.endpoint), hostAddress: '', password: '', nickname: 'x' });
     await b.run(10_000);
     expect(await joined).toBe(false);
     expect(da.host!.inspect().room.players).toHaveLength(1);

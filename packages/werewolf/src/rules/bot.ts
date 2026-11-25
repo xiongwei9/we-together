@@ -16,12 +16,14 @@ export function chooseBotAction(view: WerewolfPlayerView, rng: () => number): We
       const mates = new Set(view.wolf?.teammates ?? []);
       // 优先跟随队友已投目标，避免空刀
       const mateVote = Object.entries(view.wolf?.votes ?? {}).find(([id, t]) => mates.has(id) && t)?.[1] ?? null;
-      return { type: 'WOLF_VOTE', targetId: mateVote ?? pick(aliveOthers.filter((id) => !mates.has(id))) };
+      // 两只 Bot 狼同时行动时各自看不到对方：按轮次从相同候选中确定性选择，保证意见一致
+      const candidates = view.players.filter((p) => p.alive && p.playerId !== me && !mates.has(p.playerId)).map((p) => p.playerId);
+      return { type: 'WOLF_VOTE', targetId: mateVote ?? candidates[view.round % Math.max(1, candidates.length)] ?? null };
     }
     case 'seer-check': {
       const unchecked = aliveOthers.filter((id) => !(id in (view.seer?.checks ?? {})));
-      const target = pick(unchecked.length ? unchecked : aliveOthers);
-      return target ? { type: 'SEER_CHECK', targetId: target } : null;
+      const target = pick(unchecked);
+      return target ? { type: 'SEER_CHECK', targetId: target } : { type: 'SEER_PASS' };
     }
     case 'witch': {
       const w = view.witch;
