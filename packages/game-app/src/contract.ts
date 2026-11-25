@@ -32,6 +32,10 @@ export interface GamePresentation {
 export interface GamePluginDefinition {
   rules: AnyGamePlugin;
   presentation: GamePresentation;
+  /** app 首页游戏列表与游戏首页显示的图标（emoji） */
+  icon?: string;
+  /** app 首页游戏列表中的一句话介绍（人数、类型） */
+  summary?: string;
   /** 测试工具：根据本玩家视图给出一个自动行动（仅模拟器使用） */
   bot?: (view: unknown, rng: () => number) => unknown | null;
 }

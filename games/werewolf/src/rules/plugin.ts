@@ -1,4 +1,4 @@
-import type { GameContext, GamePlugin, Validation } from '@we/multiplayer';
+import { seededShuffle, type GameContext, type GamePlugin, type Validation } from '@we/multiplayer';
 import { DEFAULT_CONFIG, ROLE_DECKS, isValidConfig, ruleOptions, setRuleOption } from './config';
 import { SPEECH_PHASES, VOTE_PHASES, alive, reduce, validate } from './engine';
 import type { Phase, Role, WerewolfAction, WerewolfConfig, WerewolfEvent, WerewolfPlayerView, WerewolfState, Winner } from './types';
@@ -6,51 +6,6 @@ import { projectView } from './view';
 
 /** 规则文档 werewolf-6-9-rules.md v1.0 */
 const RULES_VERSION = 'werewolf-6-9-v1';
-
-// ---- 确定性随机（Fisher–Yates + 拒绝采样保证均匀） -------------------------
-
-function createSeededPrng(seed: Uint8Array): () => number {
-  // sfc32，种子取 16 字节
-  const w = (i: number): number =>
-    ((seed[i % seed.length]! << 24) | (seed[(i + 1) % seed.length]! << 16) | (seed[(i + 2) % seed.length]! << 8) | seed[(i + 3) % seed.length]!) >>> 0;
-  let a = w(0);
-  let b = w(4);
-  let c = w(8);
-  let d = w(12) | 1;
-  const next = (): number => {
-    a >>>= 0;
-    b >>>= 0;
-    c >>>= 0;
-    d >>>= 0;
-    const t = (((a + b) | 0) + d) | 0;
-    d = (d + 1) | 0;
-    a = b ^ (b >>> 9);
-    b = (c + (c << 3)) | 0;
-    c = (c << 21) | (c >>> 11);
-    c = (c + t) | 0;
-    return t >>> 0;
-  };
-  for (let i = 0; i < 12; i++) next();
-  return next;
-}
-
-function uniformIndex(next: () => number, n: number): number {
-  const limit = Math.floor(0x100000000 / n) * n;
-  for (;;) {
-    const r = next();
-    if (r < limit) return r % n;
-  }
-}
-
-export function shuffle<T>(items: readonly T[], seed: Uint8Array): T[] {
-  const next = createSeededPrng(seed);
-  const out = [...items];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = uniformIndex(next, i + 1);
-    [out[i], out[j]] = [out[j]!, out[i]!];
-  }
-  return out;
-}
 
 // ---- 解析 ---------------------------------------------------------------
 
@@ -239,7 +194,7 @@ function createInitialState(ctx: GameContext<WerewolfConfig>): WerewolfState {
   const deck = ROLE_DECKS[ctx.config.board];
   const seated = [...ctx.players].sort((a, b) => a.seat - b.seat);
   if (seated.length !== deck.length) throw new Error(`${RULES_VERSION} board ${ctx.config.board} requires exactly ${deck.length} players`);
-  let roles = shuffle(deck, ctx.seed);
+  let roles = seededShuffle(deck, ctx.seed);
   const fixture = ctx.fixture as WerewolfFixture | undefined;
   if (fixture?.rolesBySeat) {
     const forced = seated.map((p) => fixture.rolesBySeat![p.seat]);

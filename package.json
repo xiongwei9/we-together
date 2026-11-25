@@ -19,6 +19,7 @@
     "@we/multiplayer": "workspace:*",
     "@we/game-app": "workspace:*",
     "@we/werewolf": "workspace:*",
+    "@we/lost-cities": "workspace:*",
     "@we/testing": "workspace:*"
   }
 }

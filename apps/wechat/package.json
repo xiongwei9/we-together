@@ -11,7 +11,8 @@
     "@we/platform": "workspace:*",
     "@we/multiplayer": "workspace:*",
     "@we/game-app": "workspace:*",
-    "@we/werewolf": "workspace:*"
+    "@we/werewolf": "workspace:*",
+    "@we/lost-cities": "workspace:*"
   },
   "devDependencies": {
     "minigame-api-typings": "^3.8.23",

@@ -2,5 +2,5 @@
 export { chooseBotAction } from './bot';
 export { ROLE_DECKS } from './config';
 export { projectView } from './view';
-export { shuffle, werewolfRules } from './plugin';
+export { werewolfRules } from './plugin';
 export type { Role, WerewolfAction, WerewolfConfig, WerewolfPlayerView, WerewolfState } from './types';

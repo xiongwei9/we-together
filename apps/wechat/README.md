@@ -19,7 +19,7 @@ pnpm build:wechat-poc   # Gate 0 PoC，输出 dist/wechat-poc
 vite.config.ts            构建配置：入口按 mode 切换，target es2017，单文件 game.js
 public/game.json          小游戏配置，原样复制到输出目录
 public/project.config.json
-src/main.ts               正式入口：createGameInstance + 微信平台 + UDP Transport + 狼人杀
+src/main.ts               正式入口：createGameInstance + 微信平台 + UDP Transport + 狼人杀、失落的城市
 src/udp-transport.ts      createWechatUdpTransport：微信 UDP socket 实现的 Transport
 src/poc/udp-ping.ts       Gate 0：两台真机互填地址收发 ping/pong，统计成功率、RTT 和错误
 ```

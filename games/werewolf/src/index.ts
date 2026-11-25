@@ -8,5 +8,7 @@ import { werewolfPresentation } from './scenes/presentation';
 export const werewolfGame: GamePluginDefinition = {
   rules: werewolfRules,
   presentation: werewolfPresentation,
+  icon: '🐺',
+  summary: '6 / 9 人 · 身份推理',
   bot: (view, rng) => chooseBotAction(view as WerewolfPlayerView, rng),
 };

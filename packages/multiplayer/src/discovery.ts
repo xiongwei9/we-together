@@ -40,7 +40,8 @@ export function createRoomBrowser(options: {
   net: DeviceNet;
   clock: Clock;
   ids: IdFactory;
-  gameId: string;
+  /** 只搜索该游戏的房间；省略时搜索所有游戏 */
+  gameId?: string;
   intervalMs?: number;
   /** 超过该时间未再收到回复的房间从列表移除 */
   ttlMs?: number;
@@ -82,7 +83,7 @@ export function createRoomBrowser(options: {
       sessionEpoch: '',
       messageId: ids.next('c'),
       type: 'DISCOVER',
-      payload: { nonce, protocol: PROTOCOL_VERSION, gameId },
+      payload: { nonce, protocol: PROTOCOL_VERSION, gameId: gameId ?? '' },
     });
     if (prune()) notify();
     timer = clock.setTimeout(tick, intervalMs);
@@ -94,7 +95,7 @@ export function createRoomBrowser(options: {
     if (!env || env.type !== 'ROOM_INFO') return;
     const a = env.payload;
     // 只接受对本机最近几次 DISCOVER 的回复
-    if (!nonces.includes(a.nonce) || a.protocol !== PROTOCOL_VERSION || a.gameId !== gameId) return;
+    if (!nonces.includes(a.nonce) || a.protocol !== PROTOCOL_VERSION || (gameId !== undefined && a.gameId !== gameId)) return;
     const key = `${endpointKey(from.endpoint)}|${a.roomId}`;
     rooms.set(key, {
       key,

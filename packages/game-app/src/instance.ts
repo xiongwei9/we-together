@@ -27,6 +27,7 @@ import { pickNickname } from './nicknames';
 import {
   errorText,
   playerName,
+  renderAppHome,
   renderClosed,
   renderHome,
   renderJoin,
@@ -47,10 +48,16 @@ interface GameInstanceOptions {
   instanceId: string;
   platform: Platform;
   transport: Transport;
+  /**
+   * 已注册的游戏。多于一个时启动进入 app 首页（主题 + 游戏选择），选择游戏后进入该游戏的首页；
+   * 只有一个时直接进入该游戏的首页
+   */
   games: readonly GamePluginDefinition[];
+  /** app 首页展示的主题 */
+  app?: { title: string; tagline?: string };
   address?: AddressCodec;
-  /** 覆盖游戏配置（例如模拟器缩短计时） */
-  gameConfig?: unknown;
+  /** 按 gameId 覆盖游戏配置（例如模拟器缩短计时） */
+  gameConfigs?: Readonly<Record<string, unknown>>;
   /** 仅模拟器：开启 Host Inspector / Debug Port */
   debug?: boolean;
   /** 初始昵称；不提供且本机没有保存过昵称时，从昵称池随机分配 */
@@ -67,6 +74,8 @@ export interface InstanceStatus {
   hostInfo: { address: string | null; password: string | null } | null;
   /** 局域网发现的房间（仅在「加入房间」页搜索时更新） */
   rooms: readonly DiscoveredRoom[];
+  /** 当前所在游戏（游戏首页、加入页或房间内）；在 app 首页为 null */
+  gameId: string | null;
   client: ClientState;
   visible: boolean;
   muted: boolean;
@@ -81,6 +90,10 @@ interface GameActions {
   createRoom(options?: { nickname?: string; password?: string; rules?: Record<string, string> }): Promise<boolean>;
   searchRooms(): void;
   stopSearch(): void;
+  /** app 首页选择游戏，进入该游戏的首页（多游戏时） */
+  selectGame(gameId: string): void;
+  /** 从游戏首页返回 app 首页（多游戏时） */
+  openAppHome(): void;
   /** 加入局域网发现的房间；需要密码且未提供时弹出输入 */
   joinDiscovered(roomKey: string, options?: { password?: string; nickname?: string }): Promise<boolean>;
   /** 兜底：按地址手动加入 */
@@ -117,8 +130,14 @@ const NICK_KEY = 'nickname';
 export function createGameInstance(options: GameInstanceOptions): GameInstance {
   const { instanceId, platform, transport } = options;
   const codec = options.address ?? defaultAddressCodec;
-  const game = options.games[0];
-  if (!game) throw new Error('at least one game must be registered');
+  const games = options.games;
+  if (!games.length) throw new Error('at least one game must be registered');
+  const multiGame = games.length > 1;
+  const gameById = (id: string | undefined): GamePluginDefinition | undefined => games.find((g) => g.rules.id === id);
+  /** 当前游戏首页对应的游戏：创建房间、搜索房间与手动加入时使用 */
+  let selected = games[0]!;
+  /** 房间内使用房间的游戏，否则使用首页选中的游戏 */
+  const currentGame = (): GamePluginDefinition => gameById(model.client.room?.gameId) ?? selected;
 
   let ui: UiApp | null = null;
   let reliable: ReliableNode | null = null;
@@ -152,10 +171,11 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
   };
 
   const model: AppModel = {
-    gameTitle: game.rules.title,
-    rulesVersion: game.rules.rulesVersion,
+    app: { title: options.app?.title ?? 'We Together', tagline: options.app?.tagline ?? '同一 Wi-Fi，面对面一起玩' },
+    games: games.map((g) => ({ id: g.rules.id, title: g.rules.title, icon: g.icon ?? '🎲', summary: g.summary ?? '', rulesVersion: g.rules.rulesVersion })),
+    selectedGame: selected.rules.id,
     nickname: options.defaultNickname ?? '',
-    route: 'home',
+    route: multiGame ? 'apps' : 'home',
     form: { address: '', password: '' },
     showRules: false,
     rooms: [],
@@ -216,7 +236,8 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       if (input === null) return false;
       password = input;
     }
-    let config: unknown = options.gameConfig ?? game.rules.defaultConfig;
+    const game = selected;
+    let config: unknown = options.gameConfigs?.[game.rules.id] ?? game.rules.defaultConfig;
     for (const [key, value] of Object.entries(opts.rules ?? {})) {
       config = game.rules.setRuleOption(config, key, value);
       if (config === null) {
@@ -246,7 +267,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       });
       platform.keepScreenOn(true);
       model.hostInfo = { address: h.address, password: h.password };
-      const ok = await client.join({ link: net.loopbackToHost, hostAddress: h.address ?? '', password: h.password ?? '', nickname: nick, seat: options.seatHint });
+      const ok = await client.join({ link: net.loopbackToHost, hostAddress: h.address ?? '', password: h.password ?? '', nickname: nick, seat: options.seatHint, gameId: game.rules.id });
       if (!ok) disposeHost();
       // 开房后先展示房间规则，房主可以立即自定义
       patch({ busy: null, showRules: ok });
@@ -259,13 +280,13 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     }
   };
 
-  const joinEndpoint = async (ep: Endpoint, password: string, nickname?: string): Promise<boolean> => {
+  const joinEndpoint = async (ep: Endpoint, gameId: string, password: string, nickname?: string): Promise<boolean> => {
     if (!client || !net) return false;
     if (nickname) patch({ nickname });
     const nick = await ensureNickname();
     if (!nick) return false;
     disposeHost();
-    const ok = await client.join({ link: net.remote(ep), hostAddress: codec.format(ep), password, nickname: nick, seat: options.seatHint });
+    const ok = await client.join({ link: net.remote(ep), hostAddress: codec.format(ep), password, nickname: nick, seat: options.seatHint, gameId });
     if (ok) {
       stopSearch();
       patch({ route: 'home' });
@@ -280,7 +301,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       return false;
     }
     patch({ form: { address, password } });
-    return joinEndpoint(ep, password, nickname);
+    return joinEndpoint(ep, selected.rules.id, password, nickname);
   };
 
   const joinDiscovered = async (roomKey: string, opts: { password?: string; nickname?: string } = {}): Promise<boolean> => {
@@ -295,7 +316,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       if (input === null) return false;
       password = input;
     }
-    return joinEndpoint(room.endpoint, password, opts.nickname);
+    return joinEndpoint(room.endpoint, room.gameId, password, opts.nickname);
   };
 
   function searchRooms(): void {
@@ -340,8 +361,28 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     patch({ route: 'home', showRules: false });
   };
 
+  /** 加入页只列出当前游戏的房间 */
+  const visibleRooms = (): readonly DiscoveredRoom[] => (browser?.rooms() ?? []).filter((r) => r.gameId === selected.rules.id);
+
+  /** app 首页选择游戏：进入该游戏的首页 */
+  const selectGame = (gameId: string): void => {
+    const g = gameById(gameId);
+    if (!g || model.busy || model.client.phase === 'in-room') return;
+    selected = g;
+    patch({ selectedGame: g.rules.id, route: 'home', rooms: visibleRooms() });
+  };
+
+  /** 返回 app 首页（仅多游戏） */
+  const openAppHome = (): void => {
+    if (!multiGame || model.busy || model.client.phase === 'in-room') return;
+    stopSearch();
+    patch({ route: 'apps' });
+  };
+
   const actions: GameActions = {
     createRoom,
+    selectGame,
+    openAppHome,
     searchRooms,
     stopSearch,
     joinDiscovered,
@@ -359,6 +400,8 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     platform.promptText({ title, initial, numeric, maxLength });
 
   const appActions: AppActions = {
+    selectGame,
+    openAppHome,
     editNickname: () => void editNickname(),
     randomizeNickname: () => void randomizeNickname(),
     createRoom: () => void createRoom(),
@@ -468,7 +511,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         const ctx = gameContext();
         if (ctx) {
           tickRequested = false;
-          const node = game.presentation.render(ctx);
+          const node = currentGame().presentation.render(ctx);
           ui?.setTicking((ctx.remainingMs !== null && !ctx.paused) || tickRequested);
           return wrapGame(node, model, appActions, c.room);
         }
@@ -477,6 +520,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       ui?.setTicking(false);
       if (model.route === 'manual') return renderManualJoin(model, appActions, s);
       if (model.route === 'join' || c.phase === 'joining') return renderJoin(model, appActions, s);
+      if (model.route === 'apps') return renderAppHome(model, appActions, s);
       return renderHome(model, appActions, s);
     },
   };
@@ -518,14 +562,21 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       if (disposed) return;
       reliable = createReliableNode({ transport, clock: platform.clock, nextMessageId: () => ids!.next('m') });
       net = createDeviceNet({ reliable, clock: platform.clock });
-      client = createPlayerClient({ net, clock: platform.clock, ids, storage: platform.storage, gameId: game.rules.id });
-      const b = createRoomBrowser({ net, clock: platform.clock, ids, gameId: game.rules.id });
+      client = createPlayerClient({ net, clock: platform.clock, ids, storage: platform.storage, gameId: selected.rules.id });
+      // 多个游戏时广播搜索所有游戏的房间，加入页只列出当前游戏的
+      const b = createRoomBrowser({ net, clock: platform.clock, ids, gameId: multiGame ? undefined : selected.rules.id });
       browser = b;
       offs.push(
-        b.subscribe(() => patch({ rooms: b.rooms(), searching: b.searching })),
+        b.subscribe(() => patch({ rooms: visibleRooms(), searching: b.searching })),
         client.subscribe((s) => {
           const prev = model.client;
           model.client = s;
+          // 恢复会话等方式进入其他游戏的房间时，离开后回到该游戏的首页
+          const roomGame = gameById(s.room?.gameId);
+          if (roomGame && roomGame !== selected) {
+            selected = roomGame;
+            model.selectedGame = roomGame.rules.id;
+          }
           if (prev.phase !== 'closed' && s.phase === 'closed') disposeHost();
           const last = s.commands[s.commands.length - 1];
           const prevLast = prev.commands.find((c) => c.commandId === last?.commandId);
@@ -552,6 +603,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       isHost: host !== null,
       hostInfo: model.hostInfo,
       rooms: model.rooms,
+      gameId: model.client.room?.gameId ?? (model.route === 'apps' ? null : selected.rules.id),
       client: model.client,
       visible,
       muted,
@@ -560,7 +612,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    debug: options.debug ? { host: () => host, ui: () => ui, game: () => game } : null,
+    debug: options.debug ? { host: () => host, ui: () => ui, game: currentGame } : null,
     async dispose() {
       if (disposed) return;
       disposed = true;

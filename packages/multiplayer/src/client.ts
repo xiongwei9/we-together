@@ -53,7 +53,8 @@ export interface PlayerClient {
   getState(): ClientState;
   subscribe(fn: (state: ClientState) => void): Unsubscribe;
   /** seat：期望座位号（可选） */
-  join(options: { link: Link; hostAddress: string; password: string; nickname: string; seat?: number }): Promise<boolean>;
+  /** gameId：要加入的游戏，默认使用创建 Client 时的 gameId（同一 Client 可加入不同游戏的房间） */
+  join(options: { link: Link; hostAddress: string; password: string; nickname: string; seat?: number; gameId?: string }): Promise<boolean>;
   resume(saved: SavedSession): Promise<boolean>;
   /** 断线后在原链路上重新绑定会话 */
   reconnect(): Promise<boolean>;
@@ -328,7 +329,7 @@ export function createPlayerClient(options: {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    async join({ link, hostAddress, password, nickname: name, seat }) {
+    async join({ link, hostAddress, password, nickname: name, seat, gameId: joinGameId }) {
       resetSession();
       hostLink = link;
       nickname = name;
@@ -346,7 +347,7 @@ export function createPlayerClient(options: {
       const requestId = ids.next('rq');
       return request({
         type: 'JOIN_REQUEST',
-        payload: { requestId, protocol: PROTOCOL_VERSION, gameId, password: password.trim(), nickname: name, ...(seat ? { seat } : {}) },
+        payload: { requestId, protocol: PROTOCOL_VERSION, gameId: joinGameId ?? gameId, password: password.trim(), nickname: name, ...(seat ? { seat } : {}) },
       });
     },
     async resume(saved) {

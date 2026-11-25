@@ -1,14 +1,18 @@
 import { button, card, column, list, modal, pressable, row, spacer, stack, text, theme, type UINode } from '@we/framework';
 import { ERROR_TEXT, type ClientState, type DiscoveredRoom, type RoomPlayer, type RoomView, type RuleOption, type SavedSession } from '@we/multiplayer';
 
-/** 公共场景：GameSelect / Join / Lobby / Paused / Closed（设计 §12） */
+/** 公共场景：AppHome（主题 + 游戏选择）/ GameHome / Join / Lobby / Paused / Closed（设计 §12） */
 
 export interface AppModel {
-  gameTitle: string;
-  rulesVersion: string;
+  /** app 首页展示的主题 */
+  app: { title: string; tagline: string };
+  /** 已注册的游戏 */
+  games: readonly { id: string; title: string; icon: string; summary: string; rulesVersion: string }[];
+  /** 当前游戏（游戏首页、加入页使用） */
+  selectedGame: string;
   nickname: string;
-  /** join：局域网房间列表；manual：广播不可用时手动输入地址 */
-  route: 'home' | 'join' | 'manual';
+  /** apps：app 首页（多游戏）；home：游戏首页；join：局域网房间列表；manual：广播不可用时手动输入地址 */
+  route: 'apps' | 'home' | 'join' | 'manual';
   form: { address: string; password: string };
   /** 大厅中显示房间规则页（房主开房后默认打开） */
   showRules: boolean;
@@ -22,6 +26,8 @@ export interface AppModel {
 }
 
 export interface AppActions {
+  selectGame(gameId: string): void;
+  openAppHome(): void;
   editNickname(): void;
   randomizeNickname(): void;
   createRoom(): void;
@@ -84,27 +90,67 @@ function nicknameField(m: AppModel, a: AppActions): UINode {
   ]);
 }
 
-export function renderHome(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
+/** 未结束房间的恢复入口（app 首页与游戏首页共用） */
+function savedCard(m: AppModel, a: AppActions, busy: boolean): UINode | null {
+  if (!m.saved) return null;
+  return card(
+    [
+      text(`发现未结束的房间（${m.saved.hostAddress}）`, { size: 14, color: theme.muted }),
+      row({ gap: 10 }, [
+        button('恢复连接', { onPress: busy ? undefined : a.resumeSaved, flex: 1 }),
+        button('放弃', { onPress: a.discardSaved, variant: 'secondary', width: 90 }),
+      ]),
+    ],
+    { borderColor: theme.primary },
+  );
+}
+
+/** app 首页：展示 app 主题与可玩的游戏，点选后进入该游戏的首页 */
+export function renderAppHome(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
   const busy = m.busy !== null;
   return screen(safe.top, safe.bottom, [
+    spacer(0.5),
+    text('🎲', { size: 56, align: 'center' }),
+    text(m.app.title, { size: 32, weight: 'bold', align: 'center', color: theme.primary }),
+    text(m.app.tagline, { size: 14, align: 'center', color: theme.muted }),
+    spacer(0.5),
+    savedCard(m, a, busy),
+    text('选择游戏', { size: 14, color: theme.muted }),
+    list(m.games, (g) =>
+      pressable(
+        row({ height: 76, bg: theme.surface, radius: 14, padding: [0, 16, 0, 16], gap: 14, borderColor: theme.border, borderWidth: 1 }, [
+          text(g.icon, { size: 34 }),
+          column({ flex: 1, gap: 4 }, [
+            text(g.title, { size: 19, weight: 'bold', maxLines: 1 }),
+            g.summary ? text(g.summary, { size: 13, color: theme.muted, maxLines: 1 }) : null,
+          ]),
+          text('›', { size: 24, color: theme.primary }),
+        ]),
+        busy ? undefined : () => a.selectGame(g.id),
+        { pressedBg: theme.surfaceAlt },
+      ),
+    ),
+    m.busy ? text(m.busy, { align: 'center', color: theme.muted }) : null,
+    m.bootError ? text(`网络不可用：${m.bootError}`, { align: 'center', color: theme.danger, size: 14 }) : null,
+    m.client.error && m.client.phase !== 'in-room' ? text(errorText(m.client.error), { align: 'center', color: theme.danger }) : null,
+    spacer(1),
+    text('局域网联机，无需服务器。所有玩家需连接同一 Wi-Fi。', { size: 12, color: theme.muted, align: 'center' }),
+  ]);
+}
+
+/** 游戏首页：昵称、创建房间、加入房间 */
+export function renderHome(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
+  const busy = m.busy !== null;
+  const game = m.games.find((g) => g.id === m.selectedGame) ?? m.games[0]!;
+  return screen(safe.top, safe.bottom, [
+    m.games.length > 1 ? row({}, [button('‹ 全部游戏', { onPress: busy ? undefined : a.openAppHome, variant: 'ghost', height: 36, size: 15 }), spacer(1)]) : null,
     spacer(0.4),
-    text('🐺', { size: 56, align: 'center' }),
-    text(m.gameTitle, { size: 30, weight: 'bold', align: 'center', color: theme.primary }),
-    text(`规则 ${m.rulesVersion} · 局域网联机 · 无需服务器`, { size: 13, align: 'center', color: theme.muted }),
+    text(game.icon, { size: 56, align: 'center' }),
+    text(game.title, { size: 30, weight: 'bold', align: 'center', color: theme.primary }),
+    text(`规则 ${game.rulesVersion} · 局域网联机 · 无需服务器`, { size: 13, align: 'center', color: theme.muted }),
     spacer(0.4),
     nicknameField(m, a),
-    m.saved
-      ? card(
-          [
-            text(`发现未结束的房间（${m.saved.hostAddress}）`, { size: 14, color: theme.muted }),
-            row({ gap: 10 }, [
-              button('恢复连接', { onPress: busy ? undefined : a.resumeSaved, flex: 1 }),
-              button('放弃', { onPress: a.discardSaved, variant: 'secondary', width: 90 }),
-            ]),
-          ],
-          { borderColor: theme.primary },
-        )
-      : null,
+    savedCard(m, a, busy),
     button('创建房间', { onPress: busy || m.bootError ? undefined : a.createRoom, height: 56 }),
     button('加入房间', { onPress: busy || m.bootError ? undefined : a.openJoin, variant: 'secondary', height: 56 }),
     m.busy ? text(m.busy, { align: 'center', color: theme.muted }) : null,
@@ -134,7 +180,7 @@ function roomCard(r: DiscoveredRoom, a: AppActions, disabled: boolean): UINode {
 export function renderJoin(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
   const joining = m.client.phase === 'joining';
   return screen(safe.top, safe.bottom, [
-    header('加入房间', m.searching ? '正在搜索同一 Wi-Fi 下的房间…' : '已停止搜索'),
+    header('加入房间', `${m.games.find((g) => g.id === m.selectedGame)?.title ?? ''} · ${m.searching ? '正在搜索同一 Wi-Fi 下的房间…' : '已停止搜索'}`),
     nicknameField(m, a),
     m.rooms.length
       ? list(m.rooms, (r) => roomCard(r, a, joining || !m.nickname))

@@ -87,6 +87,7 @@ export interface RoomAdvert {
 }
 
 export type ClientMessage =
+  /** gameId 为空串时搜索所有游戏的房间 */
   | { type: 'DISCOVER'; payload: { nonce: string; protocol: number; gameId: string } }
   /** seat：期望座位号（可选，例如模拟器实例 pN 坐 N 号）；被占用或超出容量时由 Host 分配最小空位 */
   | { type: 'JOIN_REQUEST'; payload: { requestId: string; protocol: number; gameId: string; password: string; nickname: string; seat?: number } }

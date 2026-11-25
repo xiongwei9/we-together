@@ -1,22 +1,38 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ERROR_TEXT } from '@we/multiplayer';
 import { NETWORK_PRESETS, type PacketTraceEvent } from '@we/testing';
+import { lostCitiesGame } from '@we/lost-cities';
 import { werewolfGame } from '@we/werewolf';
-import { createSimulationController, type InstanceView, type SimulationConfig, type SimulationController } from './controller';
-
-const VIEWPORTS = {
-  'iPhone 390×844': { width: 390, height: 844 },
-  'Android 360×780': { width: 360, height: 780 },
-  '小屏 320×640': { width: 320, height: 640 },
-} as const;
+import { SIM_VIEWPORT, createSimulationController, type InstanceView, type SimulationConfig, type SimulationController } from './controller';
 
 type PresetKey = keyof typeof NETWORK_PRESETS;
 const PRESET_LABEL: Record<string, string> = { ideal: '理想', wifi: '普通 Wi-Fi', poor: '差（5% 丢包/重复/乱序）', terrible: '极差（20% 丢包）' };
 
+/** 与微信入口注册相同的游戏 */
+const GAMES = [werewolfGame, lostCitiesGame];
+/** 实例数：失落的城市 2 人；狼人杀 6 / 9 人（一键开房时按实例数选择板子） */
+const PLAYER_COUNTS = [
+  { value: 2, label: '2（失落的城市）' },
+  { value: 6, label: '6（狼人杀预女局）' },
+  { value: 9, label: '9（狼人杀预女猎局）' },
+];
+
 const ROLE_FIXTURE = { rolesBySeat: { 1: 'wolf', 2: 'wolf', 3: 'seer', 4: 'witch', 5: 'villager', 6: 'villager' } };
 
+const toolbarRowClass = 'flex flex-wrap items-center gap-2.5';
+const controlRowClass = 'my-1.5 flex flex-wrap items-center gap-2';
+const detailListClass = 'mt-0 mb-2 grid grid-cols-[70px_1fr] gap-x-2 gap-y-0.5 [&_dd]:m-0 [&_dd]:break-all [&_dt]:text-muted';
+const tableClass = [
+  'w-full border-collapse',
+  '[&_:is(th,td)]:border-b [&_:is(th,td)]:border-[#26233a] [&_:is(th,td)]:px-1.5 [&_:is(th,td)]:py-0.5',
+  '[&_:is(th,td)]:text-left [&_:is(th,td)]:whitespace-nowrap [&_th]:font-normal [&_th]:text-muted',
+].join(' ');
+const panelHeadingClass = 'mt-3 mb-1 font-semibold text-muted';
+const snapshotClass = 'rounded-md bg-surface p-2 text-[11px] break-all whitespace-pre-wrap';
+const tileButtonStateClass = 'data-[on=true]:border-danger data-[on=true]:bg-[#4a1d1b]';
+
 function useController(): SimulationController {
-  const [controller] = useState(() => createSimulationController([werewolfGame]));
+  const [controller] = useState(() => createSimulationController(GAMES));
   useEffect(() => () => void controller.dispose(), [controller]);
   return controller;
 }
@@ -42,20 +58,13 @@ export function App() {
   const controller = useController();
   useTick(controller, 500);
   const [cfg, setCfg] = useState<SimulationConfig>({
-    gameId: 'werewolf',
     playerCount: 6,
-    seed: 42,
-    deterministic: false,
-    fastTimers: true,
-    viewport: VIEWPORTS['iPhone 390×844'],
     preset: 'ideal',
   });
   const [descriptors, setDescriptors] = useState<readonly { instanceId: string }[]>([]);
   const [zoomed, setZoomed] = useState<string | null>(null);
   const [selected, setSelected] = useState<string>('p1');
-  const [columns, setColumns] = useState<number>(6);
   const [autoBot, setAutoBot] = useState(false);
-  const [roomPassword, setRoomPassword] = useState('');
 
   const create = async (): Promise<void> => {
     setZoomed(null);
@@ -78,90 +87,60 @@ export function App() {
   const simId = controller.simulationId;
 
   return (
-    <div className="sim">
-      <header className="toolbar">
-        <strong className="brand">we-together Simulator</strong>
-        <label>
-          游戏
-          <select value={cfg.gameId} onChange={(e) => setCfg({ ...cfg, gameId: e.target.value })}>
-            <option value="werewolf">狼人杀</option>
-          </select>
-        </label>
-        <label>
-          玩家数
-          <select value={cfg.playerCount} onChange={(e) => setCfg({ ...cfg, playerCount: Number(e.target.value) })}>
-            <option value={6}>6（预女局）</option>
-            <option value={9}>9（预女猎局）</option>
-          </select>
-        </label>
-        <label>
-          Seed
-          <input type="number" value={cfg.seed} style={{ width: 70 }} onChange={(e) => setCfg({ ...cfg, seed: Number(e.target.value) || 0 })} />
-        </label>
-        <label title="实例随机源使用 seed（发牌可重复）">
-          <input type="checkbox" checked={cfg.deterministic} onChange={(e) => setCfg({ ...cfg, deterministic: e.target.checked })} />
-          固定随机
-        </label>
-        <label title="神职出局后假阶段的随机停留缩短为 1–2s（默认 3–8s）">
-          <input type="checkbox" checked={cfg.fastTimers} onChange={(e) => setCfg({ ...cfg, fastTimers: e.target.checked })} />
-          快速节奏
-        </label>
-        <label>
-          视口
-          <select
-            value={Object.entries(VIEWPORTS).find(([, v]) => v.width === cfg.viewport.width)?.[0]}
-            onChange={(e) => setCfg({ ...cfg, viewport: VIEWPORTS[e.target.value as keyof typeof VIEWPORTS] })}
+    <div className="grid h-screen grid-rows-[auto_1fr_220px]">
+      <header className="flex flex-col gap-2 border-b border-line bg-panel px-3 py-2">
+        <div className={toolbarRowClass}>
+          <strong className="mr-1.5 text-accent">We Together Simulator</strong>
+          <label title="同一页面挂载的 app 实例数；游戏在各实例的 app 首页里选择">
+            实例数
+            <select value={cfg.playerCount} onChange={(e) => setCfg({ ...cfg, playerCount: Number(e.target.value) })}>
+              {PLAYER_COUNTS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button onClick={() => void create()}>创建 / 重置</button>
+          <span className="h-5 w-px bg-line" />
+          <label>
+            网络
+            <select
+              value={controller.config?.preset ?? cfg.preset}
+              onChange={(e) => {
+                const preset = e.target.value as PresetKey;
+                setCfg({ ...cfg, preset });
+                controller.setPreset(preset);
+              }}
+            >
+              {Object.keys(NETWORK_PRESETS).map((k) => (
+                <option key={k} value={k}>
+                  {PRESET_LABEL[k] ?? k}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className={toolbarRowClass}>
+          <button
+            title="实例 1 用它在 app 首页选择的游戏开房，其余实例进入同一游戏并加入"
+            onClick={() => void controller.hostAndJoinAll().then((err) => err && window.alert(err))}
           >
-            {Object.keys(VIEWPORTS).map((k) => (
-              <option key={k}>{k}</option>
-            ))}
-          </select>
-        </label>
-        <button onClick={() => void create()}>创建 / 重置</button>
-        <span className="sep" />
-        <label>
-          网络
-          <select
-            value={controller.config?.preset ?? cfg.preset}
-            onChange={(e) => {
-              const preset = e.target.value as PresetKey;
-              setCfg({ ...cfg, preset });
-              controller.setPreset(preset);
-            }}
-          >
-            {Object.keys(NETWORK_PRESETS).map((k) => (
-              <option key={k} value={k}>
-                {PRESET_LABEL[k] ?? k}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="sep" />
-        <label title="可选：留空表示房间不设密码">
-          房间密码
-          <input value={roomPassword} placeholder="可选" style={{ width: 70 }} onChange={(e) => setRoomPassword(e.target.value)} />
-        </label>
-        <button onClick={() => void controller.hostAndJoinAll(roomPassword)}>一键开房+加入</button>
-        <button onClick={() => controller.readyAll()}>全员准备</button>
-        <button onClick={() => controller.start()}>开始</button>
-        <button onClick={() => controller.botStep()}>Bot 一步</button>
-        <label>
-          <input type="checkbox" checked={autoBot} onChange={(e) => setAutoBot(e.target.checked)} />
-          自动 Bot
-        </label>
-        <span className="sep" />
-        <label>
-          列数
-          <select value={columns} onChange={(e) => setColumns(Number(e.target.value))}>
-            {[1, 2, 3, 4, 6].map((n) => (
-              <option key={n}>{n}</option>
-            ))}
-          </select>
-        </label>
+            一键开房+加入
+          </button>
+          <button onClick={() => controller.readyAll()}>全员准备</button>
+          <button onClick={() => controller.start()}>开始</button>
+          <button onClick={() => controller.botStep()}>Bot 一步</button>
+          <label>
+            <input type="checkbox" checked={autoBot} onChange={(e) => setAutoBot(e.target.checked)} />
+            自动 Bot
+          </label>
+        </div>
       </header>
 
-      <main className="body">
-        <section className={`grid ${zoomed ? 'zoomed' : ''}`} style={{ gridTemplateColumns: zoomed ? '1fr' : `repeat(${columns}, minmax(0, 1fr))` }}>
+      <main className="grid min-h-0 grid-cols-[1fr_380px]">
+        {/* 常规视图固定为 6 列，保持格子宽度与实例数无关。 */}
+        <section className={`grid content-start gap-3 overflow-auto p-3 ${zoomed ? 'grid-cols-1 justify-items-center' : 'grid-cols-6'}`}>
           {descriptors.map((d) => {
             const v = views.find((x) => x.instanceId === d.instanceId);
             return (
@@ -170,7 +149,7 @@ export function App() {
                 controller={controller}
                 instanceId={d.instanceId}
                 view={v}
-                aspect={cfg.viewport}
+                aspect={SIM_VIEWPORT}
                 zoomed={zoomed === d.instanceId}
                 hidden={!!zoomed && zoomed !== d.instanceId}
                 selected={selected === d.instanceId}
@@ -222,31 +201,43 @@ function PlayerTile(props: {
   const s = view?.status;
   const me = s?.client.room?.players.find((p) => p.playerId === s.client.playerId);
   const visible = s?.visible ?? true;
+  const linkColor = view?.online ? (s?.client.link === 'ok' ? 'bg-success' : 'bg-accent') : 'bg-danger';
   return (
-    <div className={`tile ${props.zoomed ? 'zoom' : ''} ${props.selected ? 'selected' : ''}`} style={{ display: props.hidden ? 'none' : undefined }} onMouseDown={props.onSelect}>
-      <div className="tile-bar">
-        <span className="tile-id">
-          {instanceId.toUpperCase()}
-          {s?.isHost ? ' · Host' : ''}
-          {me ? ` · ${me.seat}号` : ''}
-        </span>
-        <span className={`dot ${view?.online ? (s?.client.link === 'ok' ? 'ok' : 'warn') : 'off'}`} title={view?.online ? '在线' : '断网'} />
-        <span className="tile-status">{statusLabel(view)}</span>
-        <span className="grow" />
-        <button className={view?.online ? '' : 'on'} onClick={() => (view?.online ? controller.disconnect(instanceId) : controller.reconnect(instanceId))}>
-          {view?.online ? '断网' : '恢复'}
-        </button>
-        <button className={visible ? '' : 'on'} onClick={() => controller.setVisible(instanceId, !visible)}>
-          {visible ? '切后台' : '回前台'}
-        </button>
-        <button onClick={() => void controller.restart(instanceId)}>重启</button>
-        <button onClick={() => controller.setMuted(instanceId, !s?.muted)}>{s?.muted ? '🔇' : '🔊'}</button>
-        <button onClick={props.onZoom}>{props.zoomed ? '还原' : '放大'}</button>
+    <div
+      className={`min-w-0 rounded-[10px] border bg-panel p-1.5 ${props.selected ? 'border-accent' : 'border-line'} ${props.zoomed ? 'w-full max-w-[520px]' : ''} ${props.hidden ? 'hidden' : ''}`}
+      onMouseDown={props.onSelect}
+    >
+      <div className="mb-1.5 flex flex-col gap-1">
+        <div className="flex items-center gap-1">
+          <span className="truncate font-semibold">
+            {instanceId.toUpperCase()}
+            {s?.isHost ? ' · Host' : ''}
+            {me ? ` · ${me.seat}号` : ''}
+          </span>
+          <span className={`size-2 shrink-0 rounded-full ${linkColor}`} title={view?.online ? '在线' : '断网'} />
+          <span className="truncate text-muted">{statusLabel(view)}</span>
+        </div>
+        <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [&>button]:shrink-0 [&>button]:px-1.5 [&>button]:py-px [&>button]:text-[12px]">
+          <button className={tileButtonStateClass} data-on={!view?.online} onClick={() => (view?.online ? controller.disconnect(instanceId) : controller.reconnect(instanceId))}>
+            {view?.online ? '断网' : '恢复'}
+          </button>
+          <button className={tileButtonStateClass} data-on={!visible} onClick={() => controller.setVisible(instanceId, !visible)}>
+            {visible ? '切后台' : '回前台'}
+          </button>
+          <button onClick={() => void controller.restart(instanceId)}>重启</button>
+          <button onClick={() => controller.setMuted(instanceId, !s?.muted)}>{s?.muted ? '🔇' : '🔊'}</button>
+          <button onClick={props.onZoom}>{props.zoomed ? '还原' : '放大'}</button>
+        </div>
       </div>
-      <div className="screen" style={{ aspectRatio: `${props.aspect.width} / ${props.aspect.height}`, maxWidth: props.zoomed ? `${props.aspect.width * 1.1}px` : undefined }}>
-        <canvas ref={canvasRef} />
-        {!visible && <div className="hidden-mask">后台（模拟 onHide）</div>}
-        <div ref={overlayRef} className="overlay-host" />
+      <div
+        className="relative mx-auto w-full overflow-hidden rounded-[14px] bg-black"
+        style={{ aspectRatio: `${props.aspect.width} / ${props.aspect.height}`, maxWidth: props.zoomed ? props.aspect.width * 1.1 : undefined }}
+      >
+        <canvas ref={canvasRef} className="block size-full touch-none" />
+        {!visible && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#0a0910]/85 text-[15px] text-muted">后台（模拟 onHide）</div>
+        )}
+        <div ref={overlayRef} className="pointer-events-none absolute inset-0" />
       </div>
     </div>
   );
@@ -258,8 +249,8 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
   const inspection = controller.hostInspection();
   const selected = props.views.find((v) => v.instanceId === props.selected);
   return (
-    <aside className="inspector">
-      <div className="tabs">
+    <aside className="flex min-h-0 flex-col border-l border-line bg-panel">
+      <div className="flex flex-wrap gap-1 border-b border-line p-2">
         {(
           [
             ['room', 'Room / Phase'],
@@ -268,16 +259,16 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
             ['network', 'Network'],
           ] as const
         ).map(([k, label]) => (
-          <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
+          <button key={k} className="data-[active=true]:border-accent data-[active=true]:text-accent" data-active={tab === k} onClick={() => setTab(k)}>
             {label}
           </button>
         ))}
       </div>
-      <div className="panel">
+      <div className="flex-1 overflow-auto px-3 py-2">
         {tab === 'room' &&
           (inspection ? (
             <>
-              <dl>
+              <dl className={detailListClass}>
                 <dt>房间</dt>
                 <dd>
                   {inspection.room.roomId} · {inspection.room.status} · v{inspection.room.roomVersion}
@@ -293,7 +284,7 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
                 <dt>暂停</dt>
                 <dd>{inspection.paused ? inspection.paused.reasons.join(', ') : '否'}</dd>
               </dl>
-              <table>
+              <table className={tableClass}>
                 <thead>
                   <tr>
                     <th>座位</th>
@@ -321,25 +312,27 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
                   })}
                 </tbody>
               </table>
-              <div className="row">
-                <button onClick={() => controller.setFixture(ROLE_FIXTURE)} title="Debug Port：仅对下一局生效">
-                  下一局固定角色（1-2狼 3预 4巫）
-                </button>
-                <button onClick={() => controller.setFixture(undefined)}>取消固定</button>
-              </div>
+              {inspection.room.gameId === 'werewolf' && (
+                <div className={controlRowClass}>
+                  <button onClick={() => controller.setFixture(ROLE_FIXTURE)} title="Debug Port：仅对下一局生效">
+                    下一局固定角色（1-2狼 3预 4巫）
+                  </button>
+                  <button onClick={() => controller.setFixture(undefined)}>取消固定</button>
+                </div>
+              )}
             </>
           ) : (
-            <p className="muted">实例 1 尚未创建房间。点击「一键开房+加入」。</p>
+            <p className="text-muted">实例 1 尚未创建房间。点击「一键开房+加入」。</p>
           ))}
         {tab === 'state' && (
           <>
-            <p className="muted">测试专用：Host 完整状态的只读副本（含隐藏身份）。正式构建不包含。</p>
-            <pre>{JSON.stringify(inspection?.match?.state ?? null, null, 2)}</pre>
+            <p className="text-muted">测试专用：Host 完整状态的只读副本（含隐藏身份）。正式构建不包含。</p>
+            <pre className={snapshotClass}>{JSON.stringify(inspection?.match?.state ?? null, null, 2)}</pre>
           </>
         )}
         {tab === 'client' && selected?.status && (
           <>
-            <dl>
+            <dl className={detailListClass}>
               <dt>阶段</dt>
               <dd>{selected.status.client.phase}</dd>
               <dt>playerId</dt>
@@ -355,8 +348,8 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
               <dt>快照</dt>
               <dd>{selected.status.client.snapshot ? `v${selected.status.client.snapshot.version} · ${selected.status.client.snapshot.phaseId}` : '—'}</dd>
             </dl>
-            <h4>命令</h4>
-            <ul className="cmds">
+            <h4 className={panelHeadingClass}>命令</h4>
+            <ul className="m-0 pl-4">
               {[...selected.status.client.commands].reverse().map((c) => (
                 <li key={c.commandId}>
                   <code>{c.label}</code> {c.status}
@@ -364,8 +357,8 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
                 </li>
               ))}
             </ul>
-            <h4>该玩家的授权视图（PlayerSnapshot）</h4>
-            <pre>{JSON.stringify(selected.status.client.snapshot?.view ?? null, null, 2)}</pre>
+            <h4 className={panelHeadingClass}>该玩家的授权视图（PlayerSnapshot）</h4>
+            <pre className={snapshotClass}>{JSON.stringify(selected.status.client.snapshot?.view ?? null, null, 2)}</pre>
           </>
         )}
         {tab === 'network' && <NetworkPanel controller={controller} views={props.views} />}
@@ -382,8 +375,8 @@ function NetworkPanel(props: { controller: SimulationController; views: Instance
   const [latency, setLatency] = useState(200);
   return (
     <>
-      <h4>节点</h4>
-      <table>
+      <h4 className={panelHeadingClass}>节点</h4>
+      <table className={tableClass}>
         <tbody>
           {views.map((v) => (
             <tr key={v.instanceId}>
@@ -396,8 +389,8 @@ function NetworkPanel(props: { controller: SimulationController; views: Instance
           ))}
         </tbody>
       </table>
-      <h4>单方向链路故障</h4>
-      <div className="row">
+      <h4 className={panelHeadingClass}>单方向链路故障</h4>
+      <div className={controlRowClass}>
         <select value={from} onChange={(e) => setFrom(e.target.value)}>
           {views.map((v) => (
             <option key={v.instanceId}>{v.instanceId}</option>
@@ -410,15 +403,15 @@ function NetworkPanel(props: { controller: SimulationController; views: Instance
           ))}
         </select>
       </div>
-      <div className="row">
+      <div className={controlRowClass}>
         <label>
-          丢包 <input type="number" step={0.05} min={0} max={1} value={loss} onChange={(e) => setLoss(Number(e.target.value))} style={{ width: 60 }} />
+          丢包 <input type="number" step={0.05} min={0} max={1} value={loss} onChange={(e) => setLoss(Number(e.target.value))} className="w-15" />
         </label>
         <label>
-          延迟ms <input type="number" value={latency} onChange={(e) => setLatency(Number(e.target.value))} style={{ width: 60 }} />
+          延迟ms <input type="number" value={latency} onChange={(e) => setLatency(Number(e.target.value))} className="w-15" />
         </label>
       </div>
-      <div className="row">
+      <div className={controlRowClass}>
         <button
           onClick={() =>
             controller.setLinkFaults(from, to, { latencyMs: { min: latency * 0.8, max: latency * 1.2 }, packetLoss: loss, duplicateRate: 0.05, reorderRate: 0.1 })
@@ -428,7 +421,7 @@ function NetworkPanel(props: { controller: SimulationController; views: Instance
         </button>
         <button onClick={() => controller.setLinkFaults(from, to, null)}>清除</button>
       </div>
-      <p className="muted">故障在可靠消息层之下注入，包括 ACK 与重发。</p>
+      <p className="text-muted">故障在可靠消息层之下注入，包括 ACK 与重发。</p>
     </>
   );
 }
@@ -462,10 +455,10 @@ function EventLog(props: { controller: SimulationController; views: InstanceView
     return { delivered, dropped };
   }, [packets, packets.length]);
   return (
-    <footer className="eventlog">
-      <div className="row">
+    <footer className="flex min-h-0 flex-col border-t border-line bg-panel px-3 py-1">
+      <div className={controlRowClass}>
         <strong>Packet Inspector</strong>
-        <span className="muted">
+        <span className="text-muted">
           已投递 {stats.delivered} · 丢弃 {stats.dropped}（最近 {packets.length} 条）
         </span>
         <select value={filterNode} onChange={(e) => setFilterNode(e.target.value)}>
@@ -474,7 +467,7 @@ function EventLog(props: { controller: SimulationController; views: InstanceView
             <option key={v.instanceId}>{v.instanceId}</option>
           ))}
         </select>
-        <input placeholder="消息类型" value={filterType} onChange={(e) => setFilterType(e.target.value.toUpperCase())} style={{ width: 120 }} />
+        <input placeholder="消息类型" value={filterType} onChange={(e) => setFilterType(e.target.value.toUpperCase())} className="w-30" />
         <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
           <option value="">全部状态</option>
           <option value="queued">queued</option>
@@ -489,8 +482,8 @@ function EventLog(props: { controller: SimulationController; views: InstanceView
         <button onClick={() => setFrozen(frozen ? null : [...controller.packets()])}>{frozen ? '继续' : '暂停'}</button>
         <button onClick={() => controller.clearPackets()}>清空</button>
       </div>
-      <div className="log-table">
-        <table>
+      <div className="flex-1 overflow-auto font-packet-log text-[11.5px]">
+        <table className={tableClass}>
           <thead>
             <tr>
               <th>时间</th>
@@ -504,7 +497,7 @@ function EventLog(props: { controller: SimulationController; views: InstanceView
           </thead>
           <tbody>
             {rows.map((p) => (
-              <tr key={p.id} className={p.status}>
+              <tr key={p.id} className="data-[status=dropped]:text-danger data-[status=duplicated]:text-accent data-[status=queued]:text-muted" data-status={p.status}>
                 <td>{(p.time / 1000).toFixed(2)}</td>
                 <td>{p.from}</td>
                 <td>{p.to}</td>

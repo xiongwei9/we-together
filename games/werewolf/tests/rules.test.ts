@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { CommandContext } from '@we/multiplayer';
-import { ROLE_DECKS, projectView, shuffle, werewolfRules as R, type Role, type WerewolfAction, type WerewolfConfig, type WerewolfState } from '../src/rules';
+import { seededShuffle, type CommandContext } from '@we/multiplayer';
+import { ROLE_DECKS, projectView, werewolfRules as R, type Role, type WerewolfAction, type WerewolfConfig, type WerewolfState } from '../src/rules';
 
 type S = WerewolfState;
 
@@ -76,11 +76,11 @@ describe('发牌与配置', () => {
     const seed = Uint8Array.from({ length: 32 }, (_, i) => i * 7);
     for (const board of [6, 9] as const) {
       const deck = ROLE_DECKS[board];
-      expect(shuffle(deck, seed)).toEqual(shuffle(deck, seed));
+      expect(seededShuffle(deck, seed)).toEqual(seededShuffle(deck, seed));
       let wolves = 0;
       for (let n = 0; n < 3000; n++) {
         const s = Uint8Array.from({ length: 32 }, (_, i) => (n * 131 + i * 17 + ((n >> 3) ^ i)) & 255);
-        const d = shuffle(deck, s);
+        const d = seededShuffle(deck, s);
         expect([...d].sort()).toEqual([...deck].sort());
         if (d[0] === 'wolf') wolves++;
       }

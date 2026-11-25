@@ -4,7 +4,6 @@ import { createFrameScheduler, createRealClock, createWebPlatform, createWebRand
 import { defaultAddressCodec, type AddressCodec, type HostInspection } from '@we/multiplayer';
 import {
   NETWORK_PRESETS,
-  createSeededRandom,
   createSeededRng,
   createVirtualNetwork,
   type NetworkFaultConfig,
@@ -18,15 +17,13 @@ import {
  */
 
 export interface SimulationConfig {
-  gameId: string;
+  /** 挂载的 app 实例数（玩家设备数） */
   playerCount: number;
-  seed: number;
-  /** 固定 seed 时实例随机源也使用 seed（仅测试，可重复） */
-  deterministic: boolean;
-  fastTimers: boolean;
-  viewport: { width: number; height: number };
   preset: keyof typeof NETWORK_PRESETS;
 }
+
+/** 模拟手机的逻辑屏幕尺寸 */
+export const SIM_VIEWPORT = { width: 390, height: 844 } as const;
 
 interface InstanceDescriptor {
   instanceId: string;
@@ -53,11 +50,6 @@ interface Record_ {
   muted: boolean;
 }
 
-/** 快速节奏：仅缩短神职出局后假阶段的随机停留（默认 3–8s），其余时限按规则文档 */
-function fastConfig(defaults: unknown): unknown {
-  const d = defaults as { timers?: Record<string, unknown> };
-  return d.timers ? { ...d, timers: { ...d.timers, deadRoleDelayMs: { min: 1_000, max: 2_000 } } } : defaults;
-}
 const LOG_LIMIT = 600;
 
 export interface SimulationController {
@@ -73,8 +65,11 @@ export interface SimulationController {
   setMuted(instanceId: string, muted: boolean): void;
   setPreset(preset: keyof typeof NETWORK_PRESETS): void;
   setLinkFaults(from: string, to: string, faults: NetworkFaultConfig | null): void;
-  /** 一键：实例 1 开房（可选密码），其余实例经局域网发现找到房间并正常 JOIN */
-  hostAndJoinAll(password: string): Promise<void>;
+  /**
+   * 一键：实例 1 用它当前所在的游戏开房（不设密码），其余实例像玩家一样进入同一游戏、
+   * 经局域网发现找到房间并 JOIN（不超过房间人数上限）。返回无法执行的原因
+   */
+  hostAndJoinAll(): Promise<string | null>;
   readyAll(): void;
   start(): void;
   /** 每个实例按自己的授权视图执行一次 Bot 行动（经正常 Client 命令） */
@@ -123,21 +118,18 @@ export function createSimulationController(games: readonly GamePluginDefinition[
     },
   });
 
-  const game = (): GamePluginDefinition => {
-    const g = games.find((x) => x.rules.id === config?.gameId) ?? games[0];
-    if (!g) throw new Error('no game registered');
-    return g;
-  };
+  const gameById = (id: string | null | undefined): GamePluginDefinition | undefined => games.find((g) => g.rules.id === id);
 
   const mount = async (r: Record_): Promise<void> => {
     if (!network || !config || !r.canvas || !r.overlay) return;
     r.generation++;
     const index = Number(r.descriptor.instanceId.slice(1));
-    const random = config.deterministic ? createSeededRandom(config.seed * 1000 + index * 17 + r.generation) : createWebRandom();
+    // 与真机相同：每台模拟手机使用真随机源
+    const random = createWebRandom();
     const platform = createWebPlatform({
       canvas: r.canvas,
       overlayHost: r.overlay,
-      logicalSize: config.viewport,
+      logicalSize: SIM_VIEWPORT,
       storage: r.storage,
       clock,
       random,
@@ -149,11 +141,12 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       instanceId: r.descriptor.instanceId,
       platform,
       transport,
-      games: [game()],
+      // 与微信入口一致注册全部游戏；工具栏选中的游戏排第一，作为首页默认选择
+      // 与微信入口相同：注册全部游戏，由玩家在 app 首页选择
+      games,
       address: simCodec(),
-      gameConfig: config.fastTimers ? fastConfig(game().rules.defaultConfig) : undefined,
       debug: true,
-      // 实例 pN 坐 N 号；昵称从昵称池随机分配（固定随机时可重现）
+      // 实例 pN 坐 N 号；昵称从昵称池随机分配
       seatHint: index,
     });
     const off = instance.subscribe(notify);
@@ -200,8 +193,10 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       await teardown();
       config = cfg;
       simulationId = `sim-${++simCounter}`;
-      botRng = createSeededRng(cfg.seed);
-      network = createVirtualNetwork({ networkId: simulationId, clock, seed: cfg.seed, faults: NETWORK_PRESETS[cfg.preset] });
+      // 网络故障与 Bot 的随机序列每次创建时随机取种子
+      const seed = Math.floor(Math.random() * 0x7fffffff);
+      botRng = createSeededRng(seed);
+      network = createVirtualNetwork({ networkId: simulationId, clock, seed, faults: NETWORK_PRESETS[cfg.preset] });
       offPackets = network.subscribePackets((e) => {
         log.push(e);
         if (log.length > LOG_LIMIT) log = log.slice(-LOG_LIMIT);
@@ -278,19 +273,24 @@ export function createSimulationController(games: readonly GamePluginDefinition[
     setLinkFaults(from, to, faults) {
       network?.setLinkFaults(from, to, faults);
     },
-    async hostAndJoinAll(password) {
+    async hostAndJoinAll() {
       const h = host();
-      if (!h) return;
+      if (!h) return '实例 1 尚未启动';
+      const gameId = h.getStatus().gameId;
+      const g = gameById(gameId);
+      if (!gameId || !g) return '请先在实例 1 的 app 首页选择游戏';
       // 板子与模拟人数一致（例如 6 人 / 9 人局）
-      const rules = game().rules;
+      const rules = g.rules;
       const board = String(config?.playerCount ?? '');
       const hasBoard = rules.ruleOptions(rules.defaultConfig).some((r) => r.key === 'board' && r.choices.some((c) => c.value === board));
-      if (!h.getStatus().hostInfo) await h.actions.createRoom({ password, rules: hasBoard ? { board } : undefined });
+      if (!h.getStatus().hostInfo) await h.actions.createRoom({ password: '', rules: hasBoard ? { board } : undefined });
       const roomId = h.debug?.host()?.roomId;
-      if (!roomId) return;
+      const room = h.getStatus().client.room;
+      if (!roomId || !room) return '实例 1 创建房间失败';
       const pass = h.getStatus().hostInfo?.password ?? '';
       const joinOne = async (inst: GameInstance): Promise<void> => {
-        // 与玩家点「加入房间」相同：广播搜索，等房间出现在列表后加入
+        // 与玩家相同：进入该游戏首页，点「加入房间」广播搜索，等房间出现在列表后加入
+        inst.actions.selectGame(gameId);
         inst.actions.searchRooms();
         for (let i = 0; i < 50; i++) {
           const room = inst.getStatus().rooms.find((r) => r.roomId === roomId);
@@ -302,12 +302,15 @@ export function createSimulationController(games: readonly GamePluginDefinition[
         }
         inst.actions.stopSearch();
       };
+      const free = room.capacity.max - room.players.length;
       await Promise.all(
         [...records.values()]
           .filter((r) => r.descriptor.instanceId !== 'p1' && r.instance)
           .filter((r) => r.instance!.getStatus().client.phase !== 'in-room')
+          .slice(0, Math.max(0, free))
           .map((r) => joinOne(r.instance!)),
       );
+      return null;
     },
     readyAll() {
       for (const r of records.values()) {
@@ -320,15 +323,14 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       host()?.actions.startMatch();
     },
     botStep() {
-      const g = game();
-      if (!g.bot) return 0;
       let n = 0;
       for (const r of records.values()) {
         const s = r.instance?.getStatus();
         const snap = s?.client.snapshot;
-        if (!s || !snap || snap.paused || !s.visible) continue;
+        const bot = gameById(s?.client.room?.gameId)?.bot;
+        if (!s || !snap || !bot || snap.paused || !s.visible) continue;
         if (s.client.commands.some((c) => c.status === 'pending')) continue;
-        const action = g.bot(snap.view, botRng);
+        const action = bot(snap.view, botRng);
         if (action) {
           r.instance!.actions.sendGameAction(action);
           n++;

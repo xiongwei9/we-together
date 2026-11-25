@@ -9,7 +9,7 @@
 | 入口 | 内容 |
 | --- | --- |
 | `@we/werewolf` | `werewolfGame: GamePluginDefinition`，由 `apps/web` 和 `apps/wechat` 静态注册 |
-| `@we/werewolf/rules` | 纯规则，不依赖 UI、网络或平台：`werewolfRules`、`projectView`、`chooseBotAction`、`ROLE_DECKS`、`shuffle`，以及 `Role` / `WerewolfAction` / `WerewolfConfig` / `WerewolfPlayerView` / `WerewolfState` 类型 |
+| `@we/werewolf/rules` | 纯规则，不依赖 UI、网络或平台：`werewolfRules`、`projectView`、`chooseBotAction`、`ROLE_DECKS`，以及 `Role` / `WerewolfAction` / `WerewolfConfig` / `WerewolfPlayerView` / `WerewolfState` 类型 |
 
 ## 结构
 
@@ -19,7 +19,7 @@ src/index.ts               werewolfGame：rules + presentation + bot
 src/rules/types.ts         State / Action / Event / PlayerView 类型
 src/rules/config.ts        板子、默认配置、开房可调规则（ruleOptions / setRuleOption）
 src/rules/engine.ts        规则状态机：validate / reduce
-src/rules/plugin.ts        GamePlugin 实现：parseCommand、计时器、播报、种子洗牌
+src/rules/plugin.ts        GamePlugin 实现：parseCommand、计时器、播报、发身份
 src/rules/view.ts          projectView：按白名单生成玩家视图
 src/rules/bot.ts           简单 Bot，只读取本玩家视图
 src/scenes/presentation.ts Canvas 表现插件

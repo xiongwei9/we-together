@@ -15,5 +15,6 @@ export {
   type RoomPlayer,
   type RoomView,
 } from './protocol';
+export { seededShuffle } from './random';
 export { createReliableNode, describeDatagram, type ReliableNode } from './reliable';
 export { defaultAddressCodec, type AddressCodec, type Endpoint, type Packet, type Transport } from './transport';

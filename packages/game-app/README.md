@@ -13,16 +13,18 @@ const instance = createGameInstance({
   instanceId: 'wechat',
   platform,                 // @we/platform 的 Platform 实现
   transport,                // @we/multiplayer 的 Transport 实现
-  games: [werewolfGame],    // GamePluginDefinition 列表
-  // 可选：address、gameConfig、debug（仅模拟器）、defaultNickname、seatHint
+  games: [werewolfGame, lostCitiesGame],  // GamePluginDefinition 列表
+  // 可选：app（首页主题）、address、gameConfigs（按 gameId 覆盖配置）、debug（仅模拟器）、defaultNickname、seatHint
 });
 await instance.start();
 ```
 
+页面层级：注册多个游戏时，启动进入 **app 首页**（`app.title` / `app.tagline` 主题 + 游戏列表，以及未结束房间的恢复入口）；点选游戏进入该游戏的**游戏首页**（昵称、创建房间、加入房间，左上角「‹ 全部游戏」返回）。「创建房间」「加入房间」「手动输入地址」都针对当前游戏，加入页只列出当前游戏的房间。进入房间后按 `room.gameId` 选择表现插件。只注册一个游戏时没有 app 首页，直接进入游戏首页，房间发现也只搜索该游戏。
+
 `GameInstance` 提供：
 
-- `actions`：和 UI 按钮相同的玩家操作，包括 `createRoom`、`searchRooms`、`joinDiscovered`、`joinRoom`（手动地址兜底）、`resumeSaved`、`setReady`、`setRule`、`startMatch`、`sendGameAction`、`leaveRoom`、`roomCommand`。模拟器的批量操作也只能通过这里。
-- `getStatus()` / `subscribe()`：实例状态（endpoint、是否房主、发现的房间、Client 状态等）。
+- `actions`：和 UI 按钮相同的玩家操作，包括 `selectGame` / `openAppHome`（app 首页与游戏首页之间切换）、`createRoom`、`searchRooms`、`joinDiscovered`、`joinRoom`（手动地址兜底）、`resumeSaved`、`setReady`、`setRule`、`startMatch`、`sendGameAction`、`leaveRoom`、`roomCommand`。模拟器的批量操作也只能通过这里。
+- `getStatus()` / `subscribe()`：实例状态（endpoint、是否房主、当前游戏 `gameId`（在 app 首页时为 `null`）、发现的房间、Client 状态等）。
 - `setVisible()` / `setMuted()` / `dispose()`。
 - `debug`：只有传入 `debug: true` 时才有值，否则为 `null`。
 
@@ -34,6 +36,8 @@ await instance.start();
 interface GamePluginDefinition {
   rules: AnyGamePlugin;            // Host 侧规则（见 @we/multiplayer 的 GamePlugin）
   presentation: GamePresentation;  // Client 侧表现：render(ctx: GameSceneContext) => UINode
+  icon?: string;                   // app 首页游戏列表与游戏首页显示的 emoji
+  summary?: string;                // app 首页游戏列表中的一句话介绍
   bot?: (view, rng) => action | null;  // 仅模拟器使用
 }
 ```
@@ -45,7 +49,7 @@ interface GamePluginDefinition {
 ```text
 src/contract.ts    GamePluginDefinition / GamePresentation / GameSceneContext
 src/instance.ts    createGameInstance
-src/scenes.ts      公共场景（首页 / 加入 / 手动加入 / 大厅 / 规则 / 关闭 / 游戏外壳与暂停弹窗）
+src/scenes.ts      公共场景（app 首页 / 游戏首页 / 加入 / 手动加入 / 大厅 / 规则 / 关闭 / 游戏外壳与暂停弹窗）
 src/nicknames.ts   随机昵称池
 ```
 

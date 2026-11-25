@@ -110,6 +110,7 @@ export function createHeadlessWorld(options: { seed: number; faults?: NetworkFau
         hostAddress: host.address ?? '',
         password: host.password ?? '',
         nickname: hostOptions.nickname ?? 'Host',
+        gameId: plugin.id,
       });
       await run(50);
       if (!(await joined)) throw new Error('host client failed to join');

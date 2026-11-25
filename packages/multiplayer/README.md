@@ -22,11 +22,12 @@ Transport              平台提供的字节数据报（微信 UDP / 测试用 M
 | `transport.ts` | `Transport`、`Endpoint`、`Packet`、`AddressCodec`、`defaultAddressCodec`（`192.168.1.10:20000` 或 `mem:<networkId>/<nodeId>`） |
 | `reliable.ts` | `createReliableNode`、`describeDatagram`（Inspector 用，只解析头部） |
 | `device-net.ts` | `createDeviceNet` |
-| `discovery.ts` | `createRoomBrowser`、`DiscoveredRoom` |
+| `discovery.ts` | `createRoomBrowser`（省略 `gameId` 时搜索所有游戏的房间）、`DiscoveredRoom` |
 | `host.ts` | `createHostAuthority`、`HostAuthority`、`HostInspection` |
 | `client.ts` | `createPlayerClient`、`ClientState`、`CommandStatus`、`SavedSession` |
 | `protocol.ts` | 消息类型、`RoomView`、`PlayerSnapshot`、`RoomAction`、`PauseInfo`、`ERROR_TEXT`、`MAX_PASSWORD` |
 | `contract.ts` | `GamePlugin`、`GameContext`、`CommandContext`、`Transition`、`Validation`、`RuleOption`、`AnyGamePlugin` |
+| `random.ts` | `seededShuffle`：规则插件共用的确定性洗牌（sfc32 + 拒绝采样），由 Host 私有种子派生 |
 | `codec.ts` / `ids.ts` | `utf8Encode` / `utf8Decode`（不依赖 `TextEncoder`）、`createIdFactory` |
 
 ## 编写规则插件

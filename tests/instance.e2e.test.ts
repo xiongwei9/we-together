@@ -42,7 +42,7 @@ async function setup(seed: number, preset: keyof typeof NETWORK_PRESETS = 'ideal
       platform,
       transport: network.createTransport(`p${i}`),
       games: [werewolfGame],
-      gameConfig: FAST,
+      gameConfigs: { werewolf: FAST },
       debug: true,
       defaultNickname: `玩家${i}`,
     });

@@ -1,5 +1,6 @@
 import { createGameInstance } from '@we/game-app';
 import { createWechatPlatform } from '@we/platform/wechat';
+import { lostCitiesGame } from '@we/lost-cities';
 import { werewolfGame } from '@we/werewolf';
 import { createWechatUdpTransport } from './udp-transport';
 
@@ -8,7 +9,7 @@ const instance = createGameInstance({
   instanceId: 'wechat',
   platform: createWechatPlatform(),
   transport: createWechatUdpTransport(),
-  games: [werewolfGame],
+  games: [werewolfGame, lostCitiesGame],
 });
 
 instance.start().catch((e: unknown) => {
