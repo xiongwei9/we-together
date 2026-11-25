@@ -25,7 +25,7 @@ importers:
         version: link:packages/testing
       '@we/werewolf':
         specifier: workspace:*
-        version: link:packages/werewolf
+        version: link:games/werewolf
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
@@ -52,7 +52,7 @@ importers:
         version: link:../../packages/testing
       '@we/werewolf':
         specifier: workspace:*
-        version: link:../../packages/werewolf
+        version: link:../../games/werewolf
       react:
         specifier: 18.3.1
         version: 18.3.1
@@ -86,7 +86,7 @@ importers:
         version: link:../../packages/platform
       '@we/werewolf':
         specifier: workspace:*
-        version: link:../../packages/werewolf
+        version: link:../../games/werewolf
     devDependencies:
       minigame-api-typings:
         specifier: ^3.8.23
@@ -94,6 +94,21 @@ importers:
       vite:
         specifier: ^6.4.6
         version: 6.4.6(tsx@4.23.15)
+
+  games/werewolf:
+    dependencies:
+      '@we/framework':
+        specifier: workspace:*
+        version: link:../../packages/framework
+      '@we/game-app':
+        specifier: workspace:*
+        version: link:../../packages/game-app
+      '@we/multiplayer':
+        specifier: workspace:*
+        version: link:../../packages/multiplayer
+      '@we/platform':
+        specifier: workspace:*
+        version: link:../../packages/platform
 
   packages/framework:
     dependencies:
@@ -123,21 +138,6 @@ importers:
 
   packages/testing:
     dependencies:
-      '@we/multiplayer':
-        specifier: workspace:*
-        version: link:../multiplayer
-      '@we/platform':
-        specifier: workspace:*
-        version: link:../platform
-
-  packages/werewolf:
-    dependencies:
-      '@we/framework':
-        specifier: workspace:*
-        version: link:../framework
-      '@we/game-app':
-        specifier: workspace:*
-        version: link:../game-app
       '@we/multiplayer':
         specifier: workspace:*
         version: link:../multiplayer

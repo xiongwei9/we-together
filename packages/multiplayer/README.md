@@ -40,7 +40,7 @@ Transport              平台提供的字节数据报（微信 UDP / 测试用 M
 - `playerCount` / `ruleOptions` / `setRuleOption`：板子人数与开房时可调的规则。
 - `announce`：只返回可以公开播报的文本。
 
-完整示例见 [@we/werewolf](../werewolf)。
+完整示例见 [@we/werewolf](../../games/werewolf)。
 
 ## 安全约定
 

@@ -42,8 +42,8 @@ packages/platform/        Platform ports；web/ 与 wechat/ 适配（核心不�
 packages/framework/       Canvas 2D 节点树、flex 布局、渲染、命中测试、Scene、Toast
 packages/multiplayer/     协议与 schema、可靠消息/分片、DeviceNet、Host Authority、Player Client、规则契约
 packages/game-app/        可重入 createGameInstance + 公共场景（首页/加入/大厅/暂停/关闭）
-packages/werewolf/        rules/（纯规则、投影、Bot）与 scenes/（表现插件）
 packages/testing/         VirtualNetwork、Memory Transport、手动时钟、seeded RNG、无头设备夹具
+games/werewolf/           狼人杀：rules/（纯规则、投影、Bot）与 scenes/（表现插件）
 tests/                    跨包集成测试（VirtualNetwork 完整对局、命令语义、六实例 UI E2E）
 ```
 
@@ -52,13 +52,13 @@ tests/                    跨包集成测试（VirtualNetwork 完整对局、命
 ## 与设计的对应与偏差
 
 - 构建统一使用 Vite：Web 为常规应用构建，微信为 lib 模式 IIFE 单文件（设计中微信为 esbuild 单独构建）。
-- 设计允许初期合并 `game-contract` 与 `multiplayer`：规则契约位于 `packages/multiplayer/src/contract.ts`。狼人杀放在 `packages/werewolf`（而非 `packages/games/werewolf`）。
+- 设计允许初期合并 `game-contract` 与 `multiplayer`：规则契约位于 `packages/multiplayer/src/contract.ts`。游戏放在顶层 `games/`（狼人杀为 `games/werewolf`，设计中为 `packages/games/werewolf`），与 `packages/` 下的框架包分开。
 - 新增 `packages/game-app` 承载 Web 与微信共用的 `createGameInstance`；游戏模块由入口静态注册（`games: [werewolfGame]`），因此 game-app 不依赖具体游戏。
 - 未引入 Zod：消息 schema 为手写校验（`protocol.ts`），避免微信包体积；整个微信 `game.js` 约 110 KB。
 - 协议在设计表格基础上补充了 `RESUME_REJECT` 与 `SESSION_REJECT`（会话失效/旧 epoch）。
 - **加入房间不需要地址，房间密码可选**（替代设计中的「IP:端口 + 邀请码」）：Client 周期性向发现端口 20000 广播 `DISCOVER`，Host 单播回复 `ROOM_INFO`（房主昵称、人数、是否有密码、状态），回复地址取自数据报来源。设计中 F11 网络自动发现原为 P2，因此提前实现；手动输入地址保留为兜底。密码只做入房访问控制，不是加密密钥。
 - 微信 UDP 优先绑定 20000 端口；广播同时发往子网广播地址与 `255.255.255.255`，`setBroadcast` 需要基础库 2.24.0+。
-- **狼人杀规则以 [packages/werewolf/werewolf-6-9-rules.md](packages/werewolf/werewolf-6-9-rules.md) 为准**（取代设计 §11 的固定六人原型）：6 人预女局 / 9 人预女猎局、屠边、暗牌；夜间顺序狼人 → 女巫 → 预言家后统一结算；狼刀最高票并列重投一次；白天按座位轮流发言 → 放逐投票 → 平票一次 PK；首夜与放逐有遗言；猎人（狼刀 / 放逐可开枪、毒杀不可）；发言阶段可自爆；死亡技能结算后统一判胜负，同批次双方达成判平局；连续 3 个完整昼夜无人死亡判无结果结束。
+- **狼人杀规则以 [games/werewolf/werewolf-6-9-rules.md](games/werewolf/werewolf-6-9-rules.md) 为准**（取代设计 §11 的固定六人原型）：6 人预女局 / 9 人预女猎局、屠边、暗牌；夜间顺序狼人 → 女巫 → 预言家后统一结算；狼刀最高票并列重投一次；白天按座位轮流发言 → 放逐投票 → 平票一次 PK；首夜与放逐有遗言；猎人（狼刀 / 放逐可开枪、毒杀不可）；发言阶段可自爆；死亡技能结算后统一判胜负，同批次双方达成判平局；连续 3 个完整昼夜无人死亡判无结果结束。
 - **开房时可自定义规则**：房主开房后先进入「房间规则」页（大厅中也可随时修改，开局后锁定）：板子（6 / 9 人，房间人数上限随之变化）、警长（首日竞选，警长放逐计 1.5 票、决定发言方向并最后发言、出局时移交或撕毁警徽）、女巫自救（不可 / 仅首夜 / 全程）、狼刀决策（最高票 / 全体一致）、狼人自爆（允许 / 禁止）、发言时长（60 / 90 / 120 秒 / 不计时；不计时时竞选发言、发言、PK 发言与遗言都不限时，由发言者结束或房主「跳过当前发言」——公共控制 `SKIP_SPEECH`）。规则修改后其他玩家需重新准备。由 GamePlugin 的 `playerCount(config)` / `ruleOptions` / `setRuleOption` 与房间命令 `set-rule` 实现。
 - 计时采用规则文档 §13 的默认时限：白天阶段（发言、投票、遗言、警长相关）公开倒计时；夜间与猎人技能阶段使用 Host 隐藏计时（行动者本地显示时限）。角色已出局（或本批次无人可开枪）时，其阶段照常播报，随机停留 `deadRoleDelayMs`（默认 3–8 秒，由 Host 私有种子决定）后推进，避免通过界面或时长推断神职存活。同一阶段内的计时步骤（预言家结果展示、狼刀重投）通过 `timer().step` 切换，不改变 phaseId。
 - 昵称：首次启动从内置昵称池随机分配并保存在本机，首页 / 加入页可「🎲 换一个」或手动修改。

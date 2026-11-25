@@ -63,7 +63,7 @@
 - [x] 房主在大厅自定义规则（`set-rule`）：仅房主、仅大厅、非法取值拒绝、人数超过新板子上限拒绝、修改后其他玩家需重新准备，开局后锁定
 - [x] 静态注册：入口传入 `games: [werewolfGame]`，规则与表现插件分离
 
-### 狼人杀（packages/werewolf/werewolf-6-9-rules.md）
+### 狼人杀（games/werewolf/werewolf-6-9-rules.md）
 
 - [x] 6 人预女局 / 9 人预女猎局，`werewolf-6-9-v1`；Fisher–Yates + 拒绝采样均匀洗牌，Host 私有种子
 - [x] 夜间顺序狼人 → 女巫 → 预言家，行动与结算分离；狼刀最高票（空刀为选项）并列重投一次；可自刀、刀队友

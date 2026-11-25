@@ -9,7 +9,7 @@
 ## 改动前查阅
 
 - 架构与开发约束见 [项目设计 §17.1](docs/local-multiplayer-game-design-v0.2.md#171-coding-agent-开发约束)。
-- 狼人杀玩法以 [6／9 人规则](packages/werewolf/werewolf-6-9-rules.md) 为准。当前实现与设计的差异见 [README](README.md#与设计的对应与偏差)。
+- 狼人杀玩法以 [6／9 人规则](games/werewolf/werewolf-6-9-rules.md) 为准。当前实现与设计的差异见 [README](README.md#与设计的对应与偏差)。
 
 ## 架构与模拟器
 
