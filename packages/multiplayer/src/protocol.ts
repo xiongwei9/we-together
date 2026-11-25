@@ -1,5 +1,7 @@
 /** 统一消息模型（设计 §8.3）与运行时 schema 校验 */
 
+import type { RuleOption } from './contract';
+
 export const PROTOCOL_VERSION = 1;
 
 /** 房间密码：可选的入房口令，仅做访问控制，不作为加密密钥 */
@@ -27,6 +29,8 @@ export interface RoomView {
   matchId: string | null;
   status: RoomStatus;
   capacity: { min: number; max: number };
+  /** 本房间的规则配置（房主在大厅修改，开局后锁定） */
+  rules: readonly RuleOption[];
   players: readonly RoomPlayer[];
 }
 
@@ -45,6 +49,8 @@ export interface Envelope<T = unknown> {
 export type RoomAction =
   | { kind: 'ready'; ready: boolean }
   | { kind: 'start' }
+  /** 房主在大厅修改一项规则 */
+  | { kind: 'set-rule'; key: string; value: string }
   | { kind: 'leave' }
   | { kind: 'back-to-lobby' }
   | { kind: 'end-match' }
@@ -82,7 +88,8 @@ export interface RoomAdvert {
 
 export type ClientMessage =
   | { type: 'DISCOVER'; payload: { nonce: string; protocol: number; gameId: string } }
-  | { type: 'JOIN_REQUEST'; payload: { requestId: string; protocol: number; gameId: string; password: string; nickname: string } }
+  /** seat：期望座位号（可选，例如模拟器实例 pN 坐 N 号）；被占用或超出容量时由 Host 分配最小空位 */
+  | { type: 'JOIN_REQUEST'; payload: { requestId: string; protocol: number; gameId: string; password: string; nickname: string; seat?: number } }
   | { type: 'RESUME_REQUEST'; payload: { requestId: string; playerId: string; credential: string } }
   | { type: 'ROOM_COMMAND'; payload: { commandId: string; action: RoomAction } }
   | { type: 'GAME_COMMAND'; payload: { commandId: string; phaseId: string; expectedVersion: number; action: unknown } }
@@ -127,6 +134,8 @@ function parseRoomAction(a: unknown): RoomAction | null {
   switch (a.kind) {
     case 'ready':
       return isBool(a.ready) ? { kind: 'ready', ready: a.ready } : null;
+    case 'set-rule':
+      return isStr(a.key, 32) && isStr(a.value, 32) ? { kind: 'set-rule', key: a.key, value: a.value } : null;
     case 'start':
     case 'leave':
     case 'back-to-lobby':
@@ -149,7 +158,10 @@ export function parseClientEnvelope(raw: unknown): ClientEnvelope | null {
     case 'DISCOVER':
       return isId(p.nonce) && isNum(p.protocol) && isStr(p.gameId, 32) ? (env as ClientEnvelope) : null;
     case 'JOIN_REQUEST':
-      if (isId(p.requestId) && isNum(p.protocol) && isStr(p.gameId, 32) && isStr(p.password, MAX_PASSWORD) && isStr(p.nickname, 64))
+      if (
+        isId(p.requestId) && isNum(p.protocol) && isStr(p.gameId, 32) && isStr(p.password, MAX_PASSWORD) && isStr(p.nickname, 64) &&
+        (p.seat === undefined || (Number.isInteger(p.seat) && (p.seat as number) >= 1 && (p.seat as number) <= 64))
+      )
         return env as ClientEnvelope;
       return null;
     case 'RESUME_REQUEST':
@@ -173,6 +185,8 @@ export function parseClientEnvelope(raw: unknown): ClientEnvelope | null {
 
 function isRoomView(v: unknown): v is RoomView {
   if (!isObj(v) || !isStr(v.roomId) || !isStr(v.hostId) || !isNum(v.roomVersion) || !Array.isArray(v.players)) return false;
+  if (!Array.isArray(v.rules) || !v.rules.every((r) => isObj(r) && isStr(r.key) && isStr(r.label) && isStr(r.value) && Array.isArray(r.choices)))
+    return false;
   return v.players.every((p) => isObj(p) && isStr(p.playerId) && isStr(p.nickname) && isNum(p.seat));
 }
 
@@ -255,6 +269,8 @@ export const ERROR_TEXT: Record<string, string> = {
   NOT_HOST: '只有房主可以操作',
   NOT_READY: '还有玩家未准备或未连接',
   BAD_PLAYER_COUNT: '玩家人数不符合要求',
+  TOO_MANY_PLAYERS: '当前人数超过该规则的人数上限',
+  BAD_RULE: '规则取值不合法',
   WRONG_STATUS: '当前状态不能执行此操作',
   PAUSED: '游戏已暂停',
   STALE_PHASE: '阶段已变化，请重试',

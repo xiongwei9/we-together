@@ -52,7 +52,8 @@ export interface SavedSession {
 export interface PlayerClient {
   getState(): ClientState;
   subscribe(fn: (state: ClientState) => void): Unsubscribe;
-  join(options: { link: Link; hostAddress: string; password: string; nickname: string }): Promise<boolean>;
+  /** seat：期望座位号（可选） */
+  join(options: { link: Link; hostAddress: string; password: string; nickname: string; seat?: number }): Promise<boolean>;
   resume(saved: SavedSession): Promise<boolean>;
   /** 断线后在原链路上重新绑定会话 */
   reconnect(): Promise<boolean>;
@@ -327,7 +328,7 @@ export function createPlayerClient(options: {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    async join({ link, hostAddress, password, nickname: name }) {
+    async join({ link, hostAddress, password, nickname: name, seat }) {
       resetSession();
       hostLink = link;
       nickname = name;
@@ -345,7 +346,7 @@ export function createPlayerClient(options: {
       const requestId = ids.next('rq');
       return request({
         type: 'JOIN_REQUEST',
-        payload: { requestId, protocol: PROTOCOL_VERSION, gameId, password: password.trim(), nickname: name },
+        payload: { requestId, protocol: PROTOCOL_VERSION, gameId, password: password.trim(), nickname: name, ...(seat ? { seat } : {}) },
       });
     },
     async resume(saved) {

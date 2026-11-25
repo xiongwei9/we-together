@@ -89,7 +89,7 @@ interface Match {
   matchId: string;
   state: unknown;
   version: number;
-  timer: { phaseId: string; totalMs: number; hidden: boolean; deadline: number; remaining: number | null; cancel: Unsubscribe | null } | null;
+  timer: { key: string; phaseId: string; totalMs: number; hidden: boolean; deadline: number; remaining: number | null; cancel: Unsubscribe | null } | null;
   commandCache: Map<string, { hash: string; ok: boolean; code?: string }>;
 }
 
@@ -98,7 +98,7 @@ type CommandResult = { ok: true } | { ok: false; code: string };
 export async function createHostAuthority(options: HostOptions): Promise<HostAuthority> {
   const { net, clock, random, ids, plugin } = options;
   const hb = { ...DEFAULT_HEARTBEAT, ...options.heartbeat };
-  const config = options.config ?? plugin.defaultConfig;
+  let config: unknown = options.config ?? plugin.defaultConfig;
   const configCheck = plugin.validateConfig(config);
   if (!configCheck.ok) throw new Error(`invalid game config: ${configCheck.code}`);
 
@@ -144,7 +144,8 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     roomVersion: room.roomVersion,
     matchId: room.matchId,
     status: room.status,
-    capacity: plugin.playerCount,
+    capacity: plugin.playerCount(config),
+    rules: plugin.ruleOptions(config),
     players: room.players.map((p) => ({ ...p })).sort((a, b) => a.seat - b.seat),
   });
 
@@ -218,26 +219,28 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     m.timer = null;
   };
 
-  const armTimer = (m: Match, phaseId: string, ms: number, totalMs: number, hidden: boolean): void => {
-    const timer = { phaseId, totalMs, hidden, deadline: clock.now() + ms, remaining: null as number | null, cancel: null as Unsubscribe | null };
+  const timerKey = (t: { phaseId: string; step?: string } | null): string | null => (t ? `${t.phaseId}|${t.step ?? ''}` : null);
+
+  const armTimer = (m: Match, key: string, phaseId: string, ms: number, totalMs: number, hidden: boolean): void => {
+    const timer = { key, phaseId, totalMs, hidden, deadline: clock.now() + ms, remaining: null as number | null, cancel: null as Unsubscribe | null };
     m.timer = timer;
     if (pauseReasons.size > 0) {
       timer.remaining = ms;
       return;
     }
-    timer.cancel = clock.setTimeout(() => enqueue(() => onTimer(m, phaseId)), ms);
+    timer.cancel = clock.setTimeout(() => enqueue(() => onTimer(m, key)), ms);
   };
 
   const scheduleTimer = (m: Match): void => {
     clearTimer(m);
     if (room.status !== 'playing') return;
     const t = plugin.timer(m.state);
-    if (t) armTimer(m, t.phaseId, t.ms, t.ms, t.hidden ?? false);
+    if (t) armTimer(m, timerKey(t)!, t.phaseId, t.ms, t.ms, t.hidden ?? false);
   };
 
-  const onTimer = (m: Match, phaseId: string): void => {
+  const onTimer = (m: Match, key: string): void => {
     if (match !== m || pauseReasons.size > 0 || room.status !== 'playing') return;
-    if (!m.timer || m.timer.phaseId !== phaseId || plugin.phaseId(m.state) !== phaseId) return;
+    if (!m.timer || m.timer.key !== key || timerKey(plugin.timer(m.state)) !== key) return;
     m.timer = null;
     applyCommand(m, 'system', plugin.timeoutCommand(m.state));
   };
@@ -255,7 +258,7 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
       m.timer.cancel?.();
       m.timer.cancel = null;
     } else if (before && !after && m.timer && m.timer.remaining !== null) {
-      armTimer(m, m.timer.phaseId, m.timer.remaining, m.timer.totalMs, m.timer.hidden);
+      armTimer(m, m.timer.key, m.timer.phaseId, m.timer.remaining, m.timer.totalMs, m.timer.hidden);
     }
     m.version++;
     broadcastSnapshots();
@@ -283,8 +286,8 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
       pauseReasons.clear();
       clearTimer(m);
       broadcastRoom();
-    } else if (plugin.phaseId(m.state) !== phaseBefore || (m.timer === null) !== (plugin.timer(m.state) === null)) {
-      // 阶段变化，或同一阶段内计时器出现 / 消失（例如预言家查验后的结果展示）
+    } else if (plugin.phaseId(m.state) !== phaseBefore || (m.timer?.key ?? null) !== timerKey(plugin.timer(m.state))) {
+      // 阶段变化，或同一阶段内计时步骤变化（例如预言家查验后的结果展示）
       scheduleTimer(m);
     }
     broadcastSnapshots();
@@ -342,6 +345,15 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
 
   // ---- 房间命令 -----------------------------------------------------------
 
+  /** 期望座位空闲且不超过容量时使用，否则分配最小空位 */
+  const freeSeat = (preferred?: number): number => {
+    const taken = new Set(room.players.map((p) => p.seat));
+    if (preferred && preferred <= plugin.playerCount(config).max && !taken.has(preferred)) return preferred;
+    let seat = 1;
+    while (taken.has(seat)) seat++;
+    return seat;
+  };
+
   const removePlayer = (playerId: string): void => {
     room.players = room.players.filter((p) => p.playerId !== playerId);
     sessions.delete(playerId);
@@ -361,9 +373,26 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
         if (!isHost) return { ok: false, code: 'NOT_HOST' };
         if (room.status !== 'lobby') return { ok: false, code: 'WRONG_STATUS' };
         const n = room.players.length;
-        if (n < plugin.playerCount.min || n > plugin.playerCount.max) return { ok: false, code: 'BAD_PLAYER_COUNT' };
+        const count = plugin.playerCount(config);
+        if (n < count.min || n > count.max) return { ok: false, code: 'BAD_PLAYER_COUNT' };
         if (!room.players.every((p) => p.ready && p.connected)) return { ok: false, code: 'NOT_READY' };
         await startMatch();
+        return { ok: true };
+      }
+      case 'set-rule': {
+        if (!isHost) return { ok: false, code: 'NOT_HOST' };
+        if (room.status !== 'lobby') return { ok: false, code: 'WRONG_STATUS' };
+        const next = plugin.setRuleOption(config, action.key, action.value);
+        if (next === null || !plugin.validateConfig(next).ok) return { ok: false, code: 'BAD_RULE' };
+        if (room.players.length > plugin.playerCount(next).max) return { ok: false, code: 'TOO_MANY_PLAYERS' };
+        config = next;
+        // 人数上限变小：超出上限的座位移到空位，保证开局时座位号连续
+        for (const p of [...room.players].sort((a, b) => a.seat - b.seat)) {
+          if (p.seat > plugin.playerCount(config).max) p.seat = freeSeat();
+        }
+        // 规则变化后其他玩家需要重新确认准备
+        room.players.forEach((p) => (p.ready = p.isHost));
+        broadcastRoom();
         return { ok: true };
       }
       case 'leave':
@@ -448,14 +477,12 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
     if (!room.hostId && !isLoopback) return reject('HOST_NOT_READY');
     // 同一设备重复加入（例如重启后未走恢复）：替换旧座位
     for (const s of [...sessions.values()]) if (s.link.key === reply.key && s.playerId !== room.hostId) removePlayer(s.playerId);
-    if (room.players.length >= plugin.playerCount.max) return reject('ROOM_FULL');
+    if (room.players.length >= plugin.playerCount(config).max) return reject('ROOM_FULL');
 
     const playerId = ids.next('p');
     const credential = await ids.secret(18);
     const epoch = ids.next('e');
-    const taken = new Set(room.players.map((p) => p.seat));
-    let seat = 1;
-    while (taken.has(seat)) seat++;
+    const seat = freeSeat(env.payload.seat);
     const isHost = !room.hostId && isLoopback;
     if (isHost) room.hostId = playerId;
     room.players.push({ playerId, nickname, seat, ready: isHost, connected: true, isHost });
@@ -538,7 +565,7 @@ export async function createHostAuthority(options: HostOptions): Promise<HostAut
           gameTitle: plugin.title,
           hostName: hostPlayer.nickname,
           players: room.players.length,
-          capacity: plugin.playerCount.max,
+          capacity: plugin.playerCount(config).max,
           status: room.status,
           hasPassword: password !== null,
         },

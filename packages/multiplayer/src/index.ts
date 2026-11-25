@@ -1,5 +1,5 @@
 export { utf8Encode, utf8Decode } from './codec';
-export type { AnyGamePlugin, CommandContext, GameContext, GamePlugin, Transition, Validation } from './contract';
+export type { AnyGamePlugin, CommandContext, GameContext, GamePlugin, RuleOption, Transition, Validation } from './contract';
 export { createDeviceNet, type DeviceNet } from './device-net';
 export { createRoomBrowser, type DiscoveredRoom, type RoomBrowser } from './discovery';
 export { createIdFactory, type IdFactory } from './ids';

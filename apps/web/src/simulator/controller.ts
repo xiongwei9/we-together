@@ -53,8 +53,11 @@ interface Record_ {
   muted: boolean;
 }
 
-/** 回合内无倒计时；仅缩短神职出局后假阶段的随机停留（默认 3–8s） */
-const FAST_CONFIG = { deadRoleDelayMs: { min: 1_000, max: 2_000 }, seerRevealMs: 3_000 };
+/** 快速节奏：仅缩短神职出局后假阶段的随机停留（默认 3–8s），其余时限按规则文档 */
+function fastConfig(defaults: unknown): unknown {
+  const d = defaults as { timers?: Record<string, unknown> };
+  return d.timers ? { ...d, timers: { ...d.timers, deadRoleDelayMs: { min: 1_000, max: 2_000 } } } : defaults;
+}
 const LOG_LIMIT = 600;
 
 export interface SimulationController {
@@ -148,9 +151,10 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       transport,
       games: [game()],
       address: simCodec(),
-      gameConfig: config.fastTimers ? FAST_CONFIG : undefined,
+      gameConfig: config.fastTimers ? fastConfig(game().rules.defaultConfig) : undefined,
       debug: true,
-      defaultNickname: `玩家${index}`,
+      // 实例 pN 坐 N 号；昵称从昵称池随机分配（固定随机时可重现）
+      seatHint: index,
     });
     const off = instance.subscribe(notify);
     r.instance = instance;
@@ -277,17 +281,21 @@ export function createSimulationController(games: readonly GamePluginDefinition[
     async hostAndJoinAll(password) {
       const h = host();
       if (!h) return;
-      if (!h.getStatus().hostInfo) await h.actions.createRoom({ nickname: '玩家1', password });
+      // 板子与模拟人数一致（例如 6 人 / 9 人局）
+      const rules = game().rules;
+      const board = String(config?.playerCount ?? '');
+      const hasBoard = rules.ruleOptions(rules.defaultConfig).some((r) => r.key === 'board' && r.choices.some((c) => c.value === board));
+      if (!h.getStatus().hostInfo) await h.actions.createRoom({ password, rules: hasBoard ? { board } : undefined });
       const roomId = h.debug?.host()?.roomId;
       if (!roomId) return;
       const pass = h.getStatus().hostInfo?.password ?? '';
-      const joinOne = async (inst: GameInstance, nickname: string): Promise<void> => {
+      const joinOne = async (inst: GameInstance): Promise<void> => {
         // 与玩家点「加入房间」相同：广播搜索，等房间出现在列表后加入
         inst.actions.searchRooms();
         for (let i = 0; i < 50; i++) {
           const room = inst.getStatus().rooms.find((r) => r.roomId === roomId);
           if (room) {
-            await inst.actions.joinDiscovered(room.key, { password: pass, nickname });
+            await inst.actions.joinDiscovered(room.key, { password: pass });
             return;
           }
           await new Promise<void>((resolve) => clock.setTimeout(resolve, 100));
@@ -298,7 +306,7 @@ export function createSimulationController(games: readonly GamePluginDefinition[
         [...records.values()]
           .filter((r) => r.descriptor.instanceId !== 'p1' && r.instance)
           .filter((r) => r.instance!.getStatus().client.phase !== 'in-room')
-          .map((r) => joinOne(r.instance!, `玩家${r.descriptor.seatHint}`)),
+          .map((r) => joinOne(r.instance!)),
       );
     },
     readyAll() {

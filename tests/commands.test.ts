@@ -52,7 +52,7 @@ describe('命令语义', () => {
     expect(h!.host!.inspect().match!.version).toBe(v1);
     expect(state(h!).confirmed.filter((id) => id === p2!.client.getState().playerId)).toHaveLength(1);
     // 同 ID、不同 payload
-    raw(p2!, h!, { type: 'GAME_COMMAND', payload: { ...cmd, action: { type: 'DAY_VOTE', targetId: null } } });
+    raw(p2!, h!, { type: 'GAME_COMMAND', payload: { ...cmd, action: { type: 'VOTE', targetId: null } } });
     await world.run(300);
     expect(h!.host!.inspect().match!.version).toBe(v1);
   });
@@ -65,7 +65,7 @@ describe('命令语义', () => {
     ds.forEach((d) => d.client.gameCommand({ type: 'CONFIRM_ROLE' }));
     await world.run(1000);
     expect(state(h!).phase).toBe('night-wolf');
-    raw(p2!, h!, { type: 'GAME_COMMAND', payload: { commandId: 'cmdstale', phaseId: stale, expectedVersion: 0, action: { type: 'DAY_VOTE', targetId: null } } });
+    raw(p2!, h!, { type: 'GAME_COMMAND', payload: { commandId: 'cmdstale', phaseId: stale, expectedVersion: 0, action: { type: 'VOTE', targetId: null } } });
     await world.run(300);
     // 结果回到客户端前，客户端不知道这个原始命令；直接检查 Host 状态未变
     expect(state(h!).phase).toBe('night-wolf');
@@ -80,44 +80,57 @@ describe('命令语义', () => {
     expect(h!.host!.inspect().match!.version).toBe(v);
   });
 
-  it('多人并发投票都被顺序处理；非 Host 不能结束讨论；伪造会话被拒绝', async () => {
+  it('多人并发投票都被顺序处理；只有当前发言者能结束发言；伪造会话被拒绝', async () => {
     const world = createHeadlessWorld({ seed: 23 });
     const ds = await started(world);
     const [h] = ds;
+    const idOf = (d: HeadlessDevice): string => d.client.getState().playerId!;
     ds.forEach((d) => d.client.gameCommand({ type: 'CONFIRM_ROLE' }));
     await world.run(1000);
-    // 回合内无超时：夜间各角色由 Bot 行动后进入白天讨论
+    // 夜间各角色由 Bot 行动；狼人空刀、女巫不用药，保证首夜是平安夜
     const rng = createSeededRng(5);
-    for (let i = 0; i < 20 && state(h!).phase !== 'day-discuss'; i++) {
+    for (let i = 0; i < 20 && state(h!).phase !== 'day-speech'; i++) {
       for (const d of ds) {
         const a = chooseBotAction(d.client.getState().snapshot!.view as WerewolfPlayerView, rng);
-        // 女巫不用药，保证本测试进入白天而不是首夜即分出胜负
-        if (a) d.client.gameCommand(a.type === 'WITCH_ACTION' ? { type: 'WITCH_ACTION', action: 'pass' } : a);
+        if (!a) continue;
+        if (a.type === 'WITCH_ACTION') d.client.gameCommand({ type: 'WITCH_ACTION', action: 'pass' });
+        else if (a.type === 'WOLF_VOTE') d.client.gameCommand({ type: 'WOLF_VOTE', targetId: null });
+        else d.client.gameCommand(a);
       }
       await world.run(500);
     }
-    expect(state(h!).phase).toBe('day-discuss');
-    const nonHost = ds[3]!;
-    const id = nonHost.client.gameCommand({ type: 'END_DISCUSSION' });
+    expect(state(h!).phase).toBe('day-speech');
+    const speaker = (): HeadlessDevice => ds.find((d) => idOf(d) === state(h!).speech!.order[state(h!).speech!.index])!;
+    const other = ds.find((d) => d !== speaker())!;
+    const id = other.client.gameCommand({ type: 'END_SPEECH' });
     await world.run(300);
-    expect(nonHost.client.getState().commands.find((c) => c.commandId === id)?.code).toBe('NOT_HOST');
-    // 伪造：用 p4 的 playerId 但 p5 的地址与错误 epoch
-    raw(ds[4]!, h!, {
+    expect(other.client.getState().commands.find((c) => c.commandId === id)?.code).toBe('NOT_YOUR_TURN');
+    // 跳过发言是房主公共控制：非房主被拒绝；房主在计时模式下被规则拒绝
+    const nonHost = ds.find((d) => d !== h && d !== speaker())!;
+    const skip = nonHost.client.gameCommand({ type: 'SKIP_SPEECH' });
+    const hostSkip = h!.client.gameCommand({ type: 'SKIP_SPEECH' });
+    await world.run(300);
+    expect(nonHost.client.getState().commands.find((c) => c.commandId === skip)?.code).toBe('NOT_HOST');
+    expect(h!.client.getState().commands.find((c) => c.commandId === hostSkip)?.code).toBe('DISABLED');
+    // 伪造：用当前发言者的 playerId 但另一台设备的地址与错误 epoch
+    const before = state(h!).phaseId;
+    raw(other, h!, {
       type: 'GAME_COMMAND',
-      from: nonHost.client.getState().playerId!,
+      from: idOf(speaker()),
       sessionEpoch: 'forged',
-      payload: { commandId: 'cmdforge', phaseId: state(h!).phaseId, expectedVersion: 0, action: { type: 'END_DISCUSSION' } },
+      payload: { commandId: 'cmdforge', phaseId: before, expectedVersion: 0, action: { type: 'END_SPEECH' } },
     });
     await world.run(300);
-    expect(state(h!).phase).toBe('day-discuss');
-    h!.client.gameCommand({ type: 'END_DISCUSSION' });
-    await world.run(300);
+    expect(state(h!).phaseId).toBe(before);
+    for (let i = 0; i < 10 && state(h!).phase === 'day-speech'; i++) {
+      speaker().client.gameCommand({ type: 'END_SPEECH' });
+      await world.run(300);
+    }
     expect(state(h!).phase).toBe('day-vote');
-    const alive = ds.filter((d) => state(h!).players[d.client.getState().playerId!]!.alive);
-    alive.forEach((d) => d.client.gameCommand({ type: 'DAY_VOTE', targetId: null }));
+    ds.forEach((d) => d.client.gameCommand({ type: 'VOTE', targetId: null }));
     await world.run(1000);
-    for (const d of alive) expect(d.client.getState().commands.at(-1)?.status).toBe('ok');
-    expect(state(h!).publicHistory.at(-1)?.kind).toBe('day');
+    for (const d of ds) expect(d.client.getState().commands.at(-1)?.status).toBe('ok');
+    expect(state(h!).publicHistory.at(-1)).toMatchObject({ kind: 'vote', exiled: null });
   });
 
   it('Host 关闭房间：客户端收到 ROOM_CLOSED 并清除恢复凭证', async () => {

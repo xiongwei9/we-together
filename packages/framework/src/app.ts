@@ -20,6 +20,8 @@ export interface UiApp {
   setVisible(visible: boolean): void;
   /** 测试 / 调试：最近一次布局结果中所有可点击节点 */
   pressables(): { label: string; x: number; y: number; w: number; h: number; disabled: boolean }[];
+  /** 测试 / 调试：最近一次布局中按绘制顺序的全部文本 */
+  texts(): string[];
   dispose(): void;
 }
 
@@ -251,6 +253,15 @@ export function createUiApp(platform: Platform): UiApp {
       const out: ReturnType<UiApp['pressables']> = [];
       const walk = (l: LaidOut): void => {
         if (l.node.kind === 'box' && l.node.onPress) out.push({ label: labelOf(l), x: l.x, y: l.y, w: l.w, h: l.h, disabled: !!l.node.disabled });
+        l.children.forEach(walk);
+      };
+      if (tree) walk(tree);
+      return out;
+    },
+    texts() {
+      const out: string[] = [];
+      const walk = (l: LaidOut): void => {
+        if (l.node.kind === 'text') out.push(l.node.text);
         l.children.forEach(walk);
       };
       if (tree) walk(tree);

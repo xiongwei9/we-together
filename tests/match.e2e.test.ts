@@ -1,14 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { defaultAddressCodec, type HostInspection } from '@we/multiplayer';
 import { createHeadlessWorld, createSeededRng, NETWORK_PRESETS, type HeadlessDevice, type HeadlessWorld } from '@we/testing';
-import { chooseBotAction, werewolfRules, type WerewolfPlayerView, type WerewolfState } from '@we/werewolf/rules';
+import { chooseBotAction, werewolfRules, type WerewolfConfig, type WerewolfPlayerView, type WerewolfState } from '@we/werewolf/rules';
 
-const FAST = { deadRoleDelayMs: { min: 1000, max: 2000 }, seerRevealMs: 1000 };
+const FAST: WerewolfConfig = {
+  ...werewolfRules.defaultConfig,
+  timers: {
+    wolfMs: 3000,
+    wolfRevoteMs: 2000,
+    witchMs: 3000,
+    seerMs: 3000,
+    seerRevealMs: 1000,
+    hunterMs: 2000,
+    badgeMs: 2000,
+    sheriffSignupMs: 2000,
+    sheriffOrderMs: 2000,
+    pkSpeechMs: 3000,
+    voteMs: 3000,
+    lastWordsMs: 3000,
+    deadRoleDelayMs: { min: 1000, max: 2000 },
+  },
+};
 
-async function setupRoom(world: HeadlessWorld, count = 6): Promise<HeadlessDevice[]> {
+async function setupRoom(world: HeadlessWorld, count = 6, config: WerewolfConfig = FAST): Promise<HeadlessDevice[]> {
   const devices: HeadlessDevice[] = [];
   for (let i = 1; i <= count; i++) devices.push(await world.createDevice(`p${i}`));
-  const host = await world.createHost(devices[0]!, werewolfRules, { config: FAST, nickname: '房主' });
+  const host = await world.createHost(devices[0]!, werewolfRules, { config, nickname: '房主' });
   const pending = devices.slice(1).map((d, i) =>
     d.client.join({ link: d.net.remote(devices[0]!.endpoint), hostAddress: host.address!, password: '', nickname: `玩家${i + 2}` }),
   );
@@ -29,24 +46,21 @@ const hostState = (d: HeadlessDevice): WerewolfState => (d.host!.inspect().match
 
 async function playToEnd(world: HeadlessWorld, devices: HeadlessDevice[], seed: number, maxMs = 600_000): Promise<HostInspection> {
   const rng = createSeededRng(seed);
-  // 回合内没有超时：每个玩家每阶段行动一次；被拒绝或投递失败时重新行动
+  // 每个玩家每阶段行动一次；被拒绝或投递失败时重新行动；不行动的阶段由 Host 计时推进
   const acted = new Map<string, string>();
   for (let t = 0; t < maxMs; t += 250) {
     for (const d of devices) {
       const s = d.client.getState();
       const v = viewOf(d);
       if (!v || !s.snapshot || s.snapshot.paused) continue;
-      // 回合内无倒计时；已死亡角色阶段的隐藏延时也不得下发
-      expect(s.snapshot.timer).toBeNull();
+      // 夜间与技能阶段的计时（含已出局角色的假阶段）不得下发
+      if (v.phase.startsWith('night') || v.phase === 'hunter') expect(s.snapshot.timer).toBeNull();
       const key = `${d.nodeId}:${s.snapshot.phaseId}`;
       const prev = s.commands.find((c) => c.commandId === acted.get(key));
       if (prev && (prev.status === 'pending' || prev.status === 'ok')) continue;
       const action = chooseBotAction(v, rng);
       if (action) acted.set(key, d.client.gameCommand(action));
     }
-    // Host 结束讨论（公共控制）
-    const hv = viewOf(devices[0]!);
-    if (hv?.phase === 'day-discuss' && rng() < 0.3) devices[0]!.client.gameCommand({ type: 'END_DISCUSSION' });
     await world.run(250, 25);
     if (devices[0]!.host!.inspect().room.status === 'finished') break;
   }
@@ -66,7 +80,7 @@ describe('六人狼人杀完整对局（VirtualNetwork）', () => {
     const result = await playToEnd(world, devices, 11);
     expect(result.room.status).toBe('finished');
     const winner = hostState(devices[0]!).result?.winner;
-    expect(['wolf', 'good', 'draw']).toContain(winner);
+    expect(['wolf', 'good', 'draw', 'none']).toContain(winner);
     for (const d of devices) expect(viewOf(d)?.result?.winner).toBe(winner);
   });
 
@@ -181,6 +195,112 @@ describe('六人狼人杀完整对局（VirtualNetwork）', () => {
     expect(second.matchId).not.toBe(first);
     expect((second.state as WerewolfState).confirmed).toEqual([]);
     expect(viewOf(devices[3]!)?.phase).toBe('reveal');
+  });
+
+  it('9 人预女猎局 + 警长模式：Bot 完成整局，角色与药品不变量成立', async () => {
+    for (const seed of [31, 32, 33]) {
+      const world = createHeadlessWorld({ seed });
+      const devices = await setupRoom(world, 9, { ...FAST, board: 9, sheriff: true, witchSelfSave: 'first-night' });
+      await readyAndStart(world, devices);
+      const result = await playToEnd(world, devices, seed * 7);
+      expect(result.room.status).toBe('finished');
+      const s = hostState(devices[0]!);
+      expect(Object.values(s.players).map((p) => p.role).sort()).toEqual(['hunter', 'seer', 'villager', 'villager', 'villager', 'witch', 'wolf', 'wolf', 'wolf']);
+      expect(s.sheriffElectionDone).toBe(true);
+      expect(s.publicHistory.some((e) => e.kind === 'sheriff')).toBe(true);
+      // 每瓶药整局最多使用一次
+      expect(s.nightLog.filter((n) => n.witch?.kind === 'save').length).toBeLessThanOrEqual(1);
+      expect(s.nightLog.filter((n) => n.witch?.kind === 'poison').length).toBeLessThanOrEqual(1);
+      for (const d of devices) expect(viewOf(d)?.result?.winner).toBe(s.result?.winner);
+    }
+  });
+
+  it('房主在大厅自定义规则：仅房主、仅大厅；改板子调整人数上限；改规则后其他玩家需重新准备', async () => {
+    const world = createHeadlessWorld({ seed: 34 });
+    const devices = await setupRoom(world, 6);
+    const [host, p2] = devices as [HeadlessDevice, HeadlessDevice];
+    const rule = (d: HeadlessDevice, key: string): string | undefined => d.client.getState().room?.rules.find((r) => r.key === key)?.value;
+    expect(rule(p2, 'sheriff')).toBe('off');
+    devices.slice(1).forEach((d) => d.client.roomCommand({ kind: 'ready', ready: true }));
+    await world.run(1000);
+    // 非房主不能修改
+    const denied = p2.client.roomCommand({ kind: 'set-rule', key: 'sheriff', value: 'on' });
+    await world.run(500);
+    expect(p2.client.getState().commands.find((c) => c.commandId === denied)?.code).toBe('NOT_HOST');
+    // 非法取值
+    const bad = host.client.roomCommand({ kind: 'set-rule', key: 'board', value: '7' });
+    await world.run(500);
+    expect(host.client.getState().commands.find((c) => c.commandId === bad)?.code).toBe('BAD_RULE');
+    host.client.roomCommand({ kind: 'set-rule', key: 'sheriff', value: 'on' });
+    host.client.roomCommand({ kind: 'set-rule', key: 'witchSelfSave', value: 'always' });
+    await world.run(500);
+    expect(rule(p2, 'sheriff')).toBe('on');
+    expect(rule(p2, 'witchSelfSave')).toBe('always');
+    expect(p2.client.getState().room!.players.filter((p) => !p.isHost).every((p) => !p.ready)).toBe(true);
+    // 9 人局：容量变为 9，可继续加入
+    host.client.roomCommand({ kind: 'set-rule', key: 'board', value: '9' });
+    await world.run(500);
+    expect(p2.client.getState().room!.capacity).toEqual({ min: 9, max: 9 });
+    const p7 = await world.createDevice('p7');
+    const joined = p7.client.join({ link: p7.net.remote(host.endpoint), hostAddress: '', password: '', nickname: '七' });
+    await world.run(1000);
+    expect(await joined).toBe(true);
+    // 已有 7 人时不能改回 6 人局
+    const shrink = host.client.roomCommand({ kind: 'set-rule', key: 'board', value: '6' });
+    await world.run(500);
+    expect(host.client.getState().commands.find((c) => c.commandId === shrink)?.code).toBe('TOO_MANY_PLAYERS');
+    // 人数不足 9 人不能开始
+    [...devices.slice(1), p7].forEach((d) => d.client.roomCommand({ kind: 'ready', ready: true }));
+    await world.run(500);
+    const start = host.client.roomCommand({ kind: 'start' });
+    await world.run(500);
+    expect(host.client.getState().commands.find((c) => c.commandId === start)?.code).toBe('BAD_PLAYER_COUNT');
+    // 补齐 9 人后开始：规则锁定
+    for (const id of ['p8', 'p9']) {
+      const d = await world.createDevice(id);
+      const ok = d.client.join({ link: d.net.remote(host.endpoint), hostAddress: '', password: '', nickname: id });
+      await world.run(500);
+      expect(await ok).toBe(true);
+      d.client.roomCommand({ kind: 'ready', ready: true });
+    }
+    await world.run(500);
+    host.client.roomCommand({ kind: 'start' });
+    await world.run(1000);
+    const st = hostState(host);
+    expect(st.config).toMatchObject({ board: 9, sheriff: true, witchSelfSave: 'always' });
+    expect(Object.keys(st.players)).toHaveLength(9);
+    const locked = host.client.roomCommand({ kind: 'set-rule', key: 'sheriff', value: 'off' });
+    await world.run(500);
+    expect(host.client.getState().commands.find((c) => c.commandId === locked)?.code).toBe('WRONG_STATUS');
+  });
+
+  it('期望座位：空闲且不超容量时使用，否则分配最小空位；缩小板子时超出上限的座位移入空位', async () => {
+    const world = createHeadlessWorld({ seed: 35 });
+    const ds: HeadlessDevice[] = [];
+    for (let i = 1; i <= 8; i++) ds.push(await world.createDevice(`p${i}`));
+    const host = await world.createHost(ds[0]!, werewolfRules, { config: { ...FAST, board: 9 } });
+    const join = async (d: HeadlessDevice, seat?: number): Promise<number> => {
+      const ok = d.client.join({ link: d.net.remote(ds[0]!.endpoint), hostAddress: host.address!, password: '', nickname: d.nodeId, seat });
+      await world.run(500);
+      expect(await ok).toBe(true);
+      return d.client.getState().room!.players.find((p) => p.playerId === d.client.getState().playerId)!.seat;
+    };
+    // 倒序加入，各自坐到期望座位
+    expect(await join(ds[5]!, 6)).toBe(6);
+    expect(await join(ds[4]!, 5)).toBe(5);
+    expect(await join(ds[2]!, 3)).toBe(3);
+    // 期望座位已被占用 / 超出容量 / 未提供：分配最小空位
+    expect(await join(ds[1]!, 6)).toBe(2);
+    expect(await join(ds[3]!, 12)).toBe(4);
+    expect(await join(ds[6]!)).toBe(7);
+    // 3 号离开后改为 6 人局：7 号移到空出的 3 号
+    ds[2]!.client.leave();
+    await world.run(500);
+    ds[0]!.client.roomCommand({ kind: 'set-rule', key: 'board', value: '6' });
+    await world.run(500);
+    const seats = ds[0]!.client.getState().room!.players.map((p) => p.seat).sort((a, b) => a - b);
+    expect(seats).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(ds[0]!.client.getState().room!.players.find((p) => p.nickname === 'p7')?.seat).toBe(3);
   });
 
   it('两个 networkId 的包不能串房', async () => {

@@ -1,5 +1,5 @@
 import { button, card, column, list, modal, pressable, row, spacer, stack, text, theme, type UINode } from '@we/framework';
-import { ERROR_TEXT, type ClientState, type DiscoveredRoom, type RoomPlayer, type RoomView, type SavedSession } from '@we/multiplayer';
+import { ERROR_TEXT, type ClientState, type DiscoveredRoom, type RoomPlayer, type RoomView, type RuleOption, type SavedSession } from '@we/multiplayer';
 
 /** 公共场景：GameSelect / Join / Lobby / Paused / Closed（设计 §12） */
 
@@ -10,6 +10,8 @@ export interface AppModel {
   /** join：局域网房间列表；manual：广播不可用时手动输入地址 */
   route: 'home' | 'join' | 'manual';
   form: { address: string; password: string };
+  /** 大厅中显示房间规则页（房主开房后默认打开） */
+  showRules: boolean;
   rooms: readonly DiscoveredRoom[];
   searching: boolean;
   busy: string | null;
@@ -21,6 +23,7 @@ export interface AppModel {
 
 export interface AppActions {
   editNickname(): void;
+  randomizeNickname(): void;
   createRoom(): void;
   openJoin(): void;
   cancelJoin(): void;
@@ -32,6 +35,9 @@ export interface AppActions {
   resumeSaved(): void;
   discardSaved(): void;
   setReady(ready: boolean): void;
+  setRule(key: string, value: string): void;
+  openRules(): void;
+  closeRules(): void;
   startMatch(): void;
   leaveRoom(): void;
   reconnect(): void;
@@ -70,6 +76,14 @@ function field(label: string, value: string, placeholder: string, onPress: () =>
   );
 }
 
+/** 昵称输入框 + 「换一个」随机昵称 */
+function nicknameField(m: AppModel, a: AppActions): UINode {
+  return row({ gap: 8, align: 'end' }, [
+    column({ flex: 1 }, [field('我的昵称', m.nickname, '点击设置昵称', a.editNickname)]),
+    button('🎲 换一个', { onPress: a.randomizeNickname, variant: 'secondary', height: 50, width: 116, size: 15 }),
+  ]);
+}
+
 export function renderHome(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
   const busy = m.busy !== null;
   return screen(safe.top, safe.bottom, [
@@ -78,7 +92,7 @@ export function renderHome(m: AppModel, a: AppActions, safe: { top: number; bott
     text(m.gameTitle, { size: 30, weight: 'bold', align: 'center', color: theme.primary }),
     text(`规则 ${m.rulesVersion} · 局域网联机 · 无需服务器`, { size: 13, align: 'center', color: theme.muted }),
     spacer(0.4),
-    field('我的昵称', m.nickname, '点击设置昵称', a.editNickname),
+    nicknameField(m, a),
     m.saved
       ? card(
           [
@@ -121,7 +135,7 @@ export function renderJoin(m: AppModel, a: AppActions, safe: { top: number; bott
   const joining = m.client.phase === 'joining';
   return screen(safe.top, safe.bottom, [
     header('加入房间', m.searching ? '正在搜索同一 Wi-Fi 下的房间…' : '已停止搜索'),
-    field('我的昵称', m.nickname, '点击设置昵称', a.editNickname),
+    nicknameField(m, a),
     m.rooms.length
       ? list(m.rooms, (r) => roomCard(r, a, joining || !m.nickname))
       : card([
@@ -140,7 +154,7 @@ export function renderManualJoin(m: AppModel, a: AppActions, safe: { top: number
   const joining = m.client.phase === 'joining';
   return screen(safe.top, safe.bottom, [
     header('手动加入', '局域网搜索不到时，向房主索取地址'),
-    field('我的昵称', m.nickname, '点击设置昵称', a.editNickname),
+    nicknameField(m, a),
     field('房间地址', m.form.address, '例如 192.168.1.10:20000', a.editAddress),
     field('房间密码（可选）', m.form.password ? '•'.repeat(m.form.password.length) : '', '无密码可不填', a.editPassword),
     m.client.error ? text(errorText(m.client.error), { color: theme.danger }) : null,
@@ -163,6 +177,33 @@ function linkBanner(c: ClientState, a: AppActions): UINode | null {
   ]);
 }
 
+const choiceLabel = (r: RuleOption): string => r.choices.find((c) => c.value === r.value)?.label ?? r.value;
+
+function seatTile(p: RoomPlayer | null, seat: number, mine: boolean): UINode {
+  return column(
+    {
+      flex: 1,
+      height: 56,
+      bg: mine ? theme.surfaceAlt : theme.surface,
+      radius: 10,
+      padding: [6, 8, 6, 8],
+      gap: 2,
+      justify: 'center',
+      borderColor: mine ? theme.primary : theme.border,
+      borderWidth: 1,
+    },
+    [
+      row({ gap: 4 }, [
+        text(`${seat}号`, { size: 12, color: theme.muted }),
+        p?.isHost ? text('房主', { size: 11, color: theme.primary }) : null,
+        spacer(1),
+        p ? text(!p.connected ? '离线' : p.ready ? '已准备' : '未准备', { size: 11, color: !p.connected ? theme.danger : p.ready ? theme.success : theme.muted }) : null,
+      ]),
+      text(p ? p.nickname : '空位', { size: 15, color: p ? theme.text : theme.muted, maxLines: 1 }),
+    ],
+  );
+}
+
 export function renderLobby(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
   const c = m.client;
   const room = c.room!;
@@ -171,44 +212,41 @@ export function renderLobby(m: AppModel, a: AppActions, safe: { top: number; bot
   const seats: (RoomPlayer | null)[] = Array.from({ length: room.capacity.max }, (_, i) => room.players.find((p) => p.seat === i + 1) ?? null);
   const allReady = room.players.length >= room.capacity.min && room.players.every((p) => p.ready && p.connected);
   const pendingStart = c.commands.some((cmd) => cmd.label === 'start' && cmd.status === 'pending');
+  const grid: UINode[] = [];
+  for (let i = 0; i < seats.length; i += 3) {
+    grid.push(row({ gap: 8 }, [0, 1, 2].map((k) => (i + k < seats.length ? seatTile(seats[i + k]!, i + k + 1, seats[i + k]?.playerId === c.playerId) : spacer(1)))));
+  }
   return screen(safe.top, safe.bottom, [
     header(room.gameTitle, `房间 ${room.roomId.slice(-6)} · ${room.players.length}/${room.capacity.max} 人`),
     linkBanner(c, a),
     m.hostInfo
-      ? card([
-          text('同一 Wi-Fi 下的玩家在「加入房间」中即可看到本房间', { size: 13, color: theme.muted }),
-          row({ justify: 'space-between' }, [
-            text('房间密码', { color: theme.muted }),
-            m.hostInfo.password
-              ? text(m.hostInfo.password, { size: 24, weight: 'bold', color: theme.primary })
-              : text('未设置', { size: 16, color: theme.muted }),
-          ]),
-          m.hostInfo.address ? text(`搜索不到时可手动输入：${m.hostInfo.address}`, { size: 12, color: theme.muted }) : null,
-        ])
-      : null,
-    list(
-      seats,
-      (p, i) =>
-        row(
-          {
-            height: 50,
-            bg: p?.playerId === c.playerId ? theme.surfaceAlt : theme.surface,
-            radius: 10,
-            padding: [0, 14, 0, 14],
-            gap: 10,
-            borderColor: p?.playerId === c.playerId ? theme.primary : theme.border,
-            borderWidth: 1,
-          },
+      ? card(
           [
-            text(`${i + 1}号`, { size: 15, color: theme.muted, width: 36 }),
-            text(p ? p.nickname : '空位', { size: 17, color: p ? theme.text : theme.muted, flex: 1, maxLines: 1 }),
-            p?.isHost ? text('房主', { size: 13, color: theme.primary }) : null,
-            p && !p.connected ? text('离线', { size: 13, color: theme.danger }) : null,
-            p ? text(p.ready ? '已准备' : '未准备', { size: 14, color: p.ready ? theme.success : theme.muted }) : null,
+            row({ justify: 'space-between' }, [
+              text('房间密码', { color: theme.muted }),
+              m.hostInfo.password
+                ? text(m.hostInfo.password, { size: 22, weight: 'bold', color: theme.primary })
+                : text('未设置', { size: 16, color: theme.muted }),
+            ]),
+            text(
+              m.hostInfo.address ? `同一 Wi-Fi 下在「加入房间」即可看到；搜索不到时手动输入 ${m.hostInfo.address}` : '同一 Wi-Fi 下的玩家在「加入房间」中即可看到本房间',
+              { size: 12, color: theme.muted },
+            ),
           ],
-        ),
-      { flex: 1 },
-    ),
+          { gap: 6, padding: 12 },
+        )
+      : null,
+    room.rules.length
+      ? pressable(
+          column({ bg: theme.surface, radius: 12, padding: 12, gap: 4, borderColor: theme.border, borderWidth: 1 }, [
+            row({}, [text('房间规则', { size: 14, color: theme.muted, flex: 1 }), text(isHost ? '修改 ›' : '查看 ›', { size: 14, color: theme.primary })]),
+            text(room.rules.map(choiceLabel).join(' · '), { size: 13, maxLines: 3 }),
+          ]),
+          a.openRules,
+        )
+      : null,
+    column({ gap: 8 }, grid),
+    spacer(1),
     isHost
       ? button(pendingStart ? '开始中…' : allReady ? '开始游戏' : `等待全员准备（需 ${room.capacity.min} 人）`, {
           onPress: allReady && !pendingStart ? a.startMatch : undefined,
@@ -216,6 +254,33 @@ export function renderLobby(m: AppModel, a: AppActions, safe: { top: number; bot
         })
       : button(me?.ready ? '取消准备' : '准备', { onPress: () => a.setReady(!me?.ready), height: 56, variant: me?.ready ? 'secondary' : 'primary' }),
     button(isHost ? '解散房间' : '退出房间', { onPress: a.leaveRoom, variant: 'ghost' }),
+  ]);
+}
+
+/** 房间规则：房主可逐项点击切换取值，其他玩家只读；修改后其他玩家需重新准备 */
+export function renderRules(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
+  const room = m.client.room!;
+  const isHost = room.hostId === m.client.playerId;
+  const next = (r: RuleOption): string => {
+    const i = r.choices.findIndex((c) => c.value === r.value);
+    return r.choices[(i + 1) % r.choices.length]!.value;
+  };
+  return screen(safe.top, safe.bottom, [
+    header('房间规则', isHost ? '点击任一项切换；开局后规则锁定' : '由房主设置，开局后锁定'),
+    linkBanner(m.client, a),
+    list(room.rules, (r) =>
+      pressable(
+        row({ height: 52, bg: theme.surface, radius: 10, padding: [0, 14, 0, 14], gap: 10, borderColor: theme.border, borderWidth: 1 }, [
+          text(r.label, { size: 15, color: theme.muted, width: 80 }),
+          text(choiceLabel(r), { size: 16, flex: 1, maxLines: 1 }),
+          isHost ? text('切换', { size: 14, color: theme.primary }) : null,
+        ]),
+        isHost ? () => a.setRule(r.key, next(r)) : undefined,
+      ),
+    ),
+    isHost ? text('修改规则后，其他玩家需要重新准备。', { size: 12, color: theme.muted }) : null,
+    spacer(1),
+    button('完成', { onPress: a.closeRules, height: 56 }),
   ]);
 }
 

@@ -1,39 +1,75 @@
 import { button, card, column, row, spacer, text, theme, type UINode } from '@we/framework';
 import type { GamePresentation, GameSceneContext } from '@we/game-app';
-import type { Phase, Role, WerewolfAction, WerewolfPlayerView } from '../rules/types';
+import type { DeathCause, Phase, PublicEntry, Role, WerewolfAction, WerewolfPlayerView, Winner } from '../rules/types';
 
-const ROLE_NAME: Record<Role, string> = { wolf: '狼人', seer: '预言家', witch: '女巫', villager: '平民' };
-const ROLE_DESC: Record<Role, string> = {
-  wolf: '夜间与队友合议击杀一名玩家。两狼意见一致才会生效。',
-  seer: '每晚查验一名其他存活玩家的阵营，结果仅你可见。',
-  witch: '一瓶解药、一瓶毒药，各限一次；同一夜最多用一种。仅首夜可自救。',
-  villager: '没有夜间技能。白天通过讨论和投票找出狼人。',
-};
+const ROLE_NAME: Record<Role, string> = { wolf: '狼人', seer: '预言家', witch: '女巫', hunter: '猎人', villager: '平民' };
 const PHASE_NAME: Record<Phase, string> = {
   reveal: '查看身份',
   'night-wolf': '黑夜 · 狼人行动',
-  'night-seer': '黑夜 · 预言家行动',
   'night-witch': '黑夜 · 女巫行动',
-  'night-resolve': '黑夜结算',
-  'day-discuss': '白天 · 讨论',
-  'day-vote': '白天 · 投票',
-  'day-resolve': '白天结算',
+  'night-seer': '黑夜 · 预言家行动',
+  'sheriff-signup': '警长竞选 · 上警',
+  'sheriff-speech': '警长竞选 · 发言',
+  'sheriff-vote': '警长竞选 · 投票',
+  'sheriff-pk-speech': '警长竞选 · PK 发言',
+  'sheriff-pk-vote': '警长竞选 · PK 投票',
+  hunter: '技能结算',
+  badge: '移交警徽',
+  'last-words': '遗言',
+  'sheriff-order': '警长选择发言顺序',
+  'day-speech': '白天 · 发言',
+  'day-vote': '白天 · 放逐投票',
+  'pk-speech': '白天 · PK 发言',
+  'pk-vote': '白天 · PK 投票',
   finished: '游戏结束',
 };
+const CAUSE_NAME: Record<DeathCause, string> = { wolf: '狼刀', poison: '毒杀', exile: '放逐', shot: '枪杀', explode: '自爆' };
+const WINNER_NAME: Record<Winner, string> = { wolf: '狼人阵营胜利', good: '好人阵营胜利', draw: '平局', none: '无结果结束' };
 
 type Ctx = GameSceneContext & { view: WerewolfPlayerView };
 
 const roleColor = (r: Role): string => (r === 'wolf' ? theme.wolf : theme.good);
 const isNight = (p: Phase): boolean => p.startsWith('night');
+const seatOf = (ctx: Ctx, id: string): string => `${ctx.view.players.find((p) => p.playerId === id)?.seat ?? '?'}号`;
+const isAliveId = (ctx: Ctx, id: string): boolean => !!ctx.view.players.find((p) => p.playerId === id)?.alive;
 
-/** 回合内不显示倒计时：阶段由玩家操作或房主推进 */
+function roleDesc(v: WerewolfPlayerView, role: Role): string {
+  const selfSave = { never: '全程不可自救', 'first-night': '仅首夜可自救', always: '可以自救' }[v.rules.witchSelfSave];
+  switch (role) {
+    case 'wolf':
+      return `夜间与队友共同决定袭击一名玩家（${v.rules.wolfKill === 'majority' ? '最高票生效，平票重投一次' : '全体一致才生效'}），可空刀或自刀。${v.rules.selfExplode ? '白天发言阶段可在本卡片中自爆。' : ''}`;
+    case 'seer':
+      return '每晚查验一名其他存活玩家是好人还是狼人，结果仅你可见。';
+    case 'witch':
+      return `解药、毒药各一瓶，同一夜最多用一种；${selfSave}。解药用完后不再得知刀口。`;
+    case 'hunter':
+      return '被狼刀或被放逐出局时可以开枪带走一名玩家；被毒杀时不能开枪。';
+    case 'villager':
+      return '没有夜间技能。白天通过发言和投票找出狼人。';
+  }
+}
+
+/** 公开倒计时（白天阶段）；隐藏计时阶段只给行动者显示本地倒计时 */
+function countdown(ctx: Ctx): string | null {
+  if (ctx.remainingMs !== null) return `${Math.ceil(ctx.remainingMs / 1000)}s`;
+  const limit = ctx.view.actionLimitMs;
+  if (limit === null) return null;
+  const startedAt = ctx.local.actionAt as number | undefined;
+  if (startedAt === undefined) ctx.setLocal({ actionAt: ctx.now });
+  const secs = Math.max(0, Math.ceil((limit - (startedAt === undefined ? 0 : ctx.now - startedAt)) / 1000));
+  if (secs > 0) ctx.keepTicking();
+  return `${secs}s`;
+}
+
 function topBar(ctx: Ctx): UINode {
   const v = ctx.view;
+  const left = countdown(ctx);
   return row({ gap: 10, height: 44 }, [
     column({ flex: 1, gap: 2 }, [
-      text(v.round > 0 ? `第 ${v.round} 轮` : '准备阶段', { size: 13, color: theme.muted }),
-      text(PHASE_NAME[v.phase], { size: 19, weight: 'bold' }),
+      text(v.round > 0 ? `第 ${v.round} 轮${v.sheriff ? ` · 警长 ${seatOf(ctx, v.sheriff)}` : ''}` : `准备阶段 · ${v.rules.board} 人局`, { size: 13, color: theme.muted }),
+      text(PHASE_NAME[v.phase], { size: 19, weight: 'bold', maxLines: 1 }),
     ]),
+    left ? text(left, { size: 20, weight: 'bold', color: theme.primary }) : null,
     button(ctx.local.showRole ? '收起身份' : '我的身份', {
       onPress: () => ctx.setLocal({ showRole: !ctx.local.showRole }),
       variant: 'secondary',
@@ -54,28 +90,41 @@ function roleCard(ctx: Ctx): UINode | null {
         text(v.me.alive ? '存活' : '已出局', { size: 14, color: v.me.alive ? theme.success : theme.danger }),
       ]),
       text(ROLE_NAME[role], { size: 30, weight: 'bold', color: roleColor(role) }),
-      text(ROLE_DESC[role], { size: 14, color: theme.muted }),
+      text(roleDesc(v, role), { size: 14, color: theme.muted }),
       v.wolf ? text(`狼队友：${v.wolf.teammates.map(ctx.nameOf).join('、') || '无'}`, { size: 15, color: theme.wolf }) : null,
       v.seer && Object.keys(v.seer.checks).length
         ? text(
             `查验记录：${Object.entries(v.seer.checks)
-              .map(([id, t]) => `${ctx.nameOf(id)}=${t === 'wolf' ? '狼人' : '好人'}`)
+              .map(([id, t]) => `${seatOf(ctx, id)}=${t === 'wolf' ? '狼人' : '好人'}`)
               .join('；')}`,
             { size: 14 },
           )
         : null,
       v.witch ? text(`解药：${v.witch.antidote ? '可用' : '已用'}　毒药：${v.witch.poison ? '可用' : '已用'}`, { size: 14 }) : null,
+      explodeControl(ctx),
     ],
     { borderColor: roleColor(role) },
   );
 }
 
-/**
- * 玩家网格。提供 selectable 时处于「选择目标」模式：不可选的存活玩家（本人、狼队友等）置灰。
- */
-function playerGrid(ctx: Ctx, options: { selectable?: (id: string) => boolean; selected?: string | null; onSelect?: (id: string) => void; badge?: (id: string) => string | null }): UINode {
+/** 狼人自爆：只放在身份卡里（需先点「我的身份」），避免主界面出现仅狼人可见的按钮；两步确认 */
+function explodeControl(ctx: Ctx): UINode | null {
+  if (!ctx.view.canExplode) return null;
+  if (!ctx.local.confirmExplode) return button('自爆', { onPress: () => ctx.setLocal({ confirmExplode: true }), variant: 'danger', height: 40, size: 15 });
+  return row({ gap: 10 }, [
+    button('确认自爆（公开狼人身份）', { onPress: () => submit(ctx, { type: 'EXPLODE' }), variant: 'danger', flex: 1, height: 40, size: 15 }),
+    button('取消', { onPress: () => ctx.setLocal({ confirmExplode: false }), variant: 'secondary', width: 70, height: 40, size: 15 }),
+  ]);
+}
+
+/** 玩家网格。提供 selectable 时处于「选择目标」模式：不可选的存活玩家置灰 */
+function playerGrid(
+  ctx: Ctx,
+  options: { selectable?: (id: string) => boolean; selected?: string | null; onSelect?: (id: string) => void; badge?: (id: string) => string | null },
+): UINode {
   const v = ctx.view;
   const selecting = !!options.selectable;
+  const tall = v.players.length <= 6 ? 52 : 44;
   const rows: UINode[] = [];
   for (let i = 0; i < v.players.length; i += 2) {
     rows.push(
@@ -84,19 +133,21 @@ function playerGrid(ctx: Ctx, options: { selectable?: (id: string) => boolean; s
         v.players.slice(i, i + 2).map((p) => {
           const canSelect = !!options.selectable?.(p.playerId);
           const selected = options.selected === p.playerId;
-          const badge = options.badge?.(p.playerId);
+          const badge = [v.sheriff === p.playerId ? '警长' : null, v.speech?.current === p.playerId ? '发言中' : null, options.badge?.(p.playerId) ?? null]
+            .filter(Boolean)
+            .join(' ');
           const isMe = p.playerId === v.me?.playerId;
           const greyed = selecting && p.alive && !canSelect && !selected;
           return {
             ...row(
               {
                 flex: 1,
-                height: 52,
+                height: tall,
                 radius: 10,
                 padding: [0, 12, 0, 12],
                 gap: 6,
                 bg: selected ? '#5a4a20' : greyed ? '#1a1822' : p.alive ? theme.surface : '#18161f',
-                borderColor: selected ? theme.primary : isMe ? theme.muted : theme.border,
+                borderColor: selected || v.speech?.current === p.playerId ? theme.primary : isMe ? theme.muted : theme.border,
                 borderWidth: selected ? 2 : 1,
                 opacity: !p.alive ? 0.55 : greyed ? 0.45 : 1,
               },
@@ -128,17 +179,46 @@ function commandBar(ctx: Ctx): UINode | null {
   return null;
 }
 
-function submit(ctx: Ctx, action: WerewolfAction): void {
-  ctx.send(action);
-}
+const submit = (ctx: Ctx, action: WerewolfAction): void => void ctx.send(action);
+const selectedTarget = (ctx: Ctx): string | null => (ctx.local.target as string | undefined) ?? null;
 
-function waitingNight(ctx: Ctx): UINode {
-  return column({ flex: 1, bg: theme.night, radius: 16, align: 'center', justify: 'center', gap: 10, padding: 20 }, [
-    text('🌙', { size: 48, align: 'center' }),
-    text('天黑请闭眼', { size: 24, weight: 'bold', align: 'center' }),
-    text('请等待其他角色行动', { size: 14, color: theme.muted, align: 'center' }),
+/** 选目标 + 确认 / 放弃 的通用面板 */
+function targetPanel(
+  ctx: Ctx,
+  opts: { hint: string; can: (id: string) => boolean; confirm: string; onConfirm: (id: string) => WerewolfAction; skip?: { label: string; action: WerewolfAction }; danger?: boolean; extra?: UINode | null },
+): UINode {
+  const target = selectedTarget(ctx);
+  return column({ flex: 1, gap: 12 }, [
+    text(opts.hint, { size: 15, color: theme.muted }),
+    opts.extra ?? null,
+    playerGrid(ctx, { selectable: opts.can, selected: target, onSelect: (id) => ctx.setLocal({ target: id }) }),
+    spacer(1),
+    commandBar(ctx),
+    row({ gap: 10 }, [
+      button(opts.confirm, { onPress: target && opts.can(target) ? () => submit(ctx, opts.onConfirm(target)) : undefined, flex: 1, variant: opts.danger ? 'danger' : 'primary' }),
+      opts.skip ? button(opts.skip.label, { onPress: () => submit(ctx, opts.skip!.action), variant: 'secondary', width: 110 }) : null,
+    ]),
   ]);
 }
+
+function waiting(ctx: Ctx, title: string, hint: string, icon = '🌙'): UINode {
+  return column({ flex: 1, bg: isNight(ctx.view.phase) ? theme.night : theme.surface, radius: 16, align: 'center', justify: 'center', gap: 10, padding: 20 }, [
+    text(icon, { size: 48, align: 'center' }),
+    text(title, { size: 24, weight: 'bold', align: 'center' }),
+    text(hint, { size: 14, color: theme.muted, align: 'center' }),
+  ]);
+}
+
+const waitingNight = (ctx: Ctx): UINode => waiting(ctx, '天黑请闭眼', '请等待其他角色行动');
+
+/** 不计时模式下房主可跳过当前发言（公共控制，出局的房主同样可用） */
+function skipSpeechButton(ctx: Ctx): UINode | null {
+  const v = ctx.view;
+  if (!ctx.isHost || v.rules.speechSec !== 0 || !v.speech || v.speech.current === v.me?.playerId || v.result) return null;
+  return button('跳过当前发言（房主）', { onPress: () => submit(ctx, { type: 'SKIP_SPEECH' }), variant: 'secondary', height: 40, size: 15, flex: 1 });
+}
+
+// ---- 身份与夜间 -----------------------------------------------------------
 
 function revealPanel(ctx: Ctx): UINode {
   const v = ctx.view;
@@ -163,213 +243,306 @@ function revealPanel(ctx: Ctx): UINode {
 function wolfPanel(ctx: Ctx): UINode {
   const v = ctx.view;
   const me = v.me!.playerId;
-  const mates = v.wolf?.teammates ?? [];
-  const votes = v.wolf?.votes ?? {};
-  const intents = v.wolf?.intents ?? {};
-  const isAliveId = (id: string): boolean => !!v.players.find((p) => p.playerId === id)?.alive;
-  const aliveMates = mates.filter(isAliveId);
-  const seat = (id: string): string => ctx.nameOf(id).split(' ')[0]!;
+  const w = v.wolf!;
+  const votes = w.votes ?? {};
+  const intents = w.intents ?? {};
+  const aliveMates = w.teammates.filter((id) => isAliveId(ctx, id));
+  const revote = w.revote;
+  const allowed = (id: string | null): boolean => (revote ? revote.includes(id) : id === null || isAliveId(ctx, id));
   // 我的选择：已确认以狼票为准，否则以本地点选或已同步的意向为准
   const target = v.submitted ? (votes[me] ?? null) : ((ctx.local.target as string | undefined) ?? intents[me] ?? null);
-  /** 队友的选择：已确认的狼票优先，其次是意向；undefined 表示还没选 */
   const mateChoice = (m: string): { id: string | null; confirmed: boolean } | undefined =>
     m in votes ? { id: votes[m]!, confirmed: true } : m in intents ? { id: intents[m]!, confirmed: false } : undefined;
-
   const select = (id: string): void => {
     ctx.setLocal({ target: id });
     // 意向即时同步给存活队友，不参与结算
     ctx.send({ type: 'WOLF_SELECT', targetId: id });
   };
-
   const mateLines = aliveMates.length
     ? aliveMates.map((m) => {
         const c = mateChoice(m);
-        const desc = !c ? '还在选择' : c.id === null ? (c.confirmed ? '已确认弃权' : '暂未选择') : `${c.confirmed ? '已确认' : '想刀'} ${ctx.nameOf(c.id)}`;
+        const desc = !c ? '还在选择' : c.id === null ? (c.confirmed ? '已确认空刀' : '倾向空刀') : `${c.confirmed ? '已确认' : '想刀'} ${ctx.nameOf(c.id)}`;
         return text(`队友 ${ctx.nameOf(m)}：${desc}`, { size: 15, color: c?.confirmed ? theme.wolf : theme.text });
       })
-    : [text('你的队友已出局，你的选择直接生效', { size: 15 })];
-
-  let agreement: UINode | null = null;
-  if (aliveMates.length && target) {
-    const choices = aliveMates.map(mateChoice);
-    if (choices.every((c) => c?.id === target)) agreement = text('与队友意见一致', { size: 13, color: theme.success });
-    else if (choices.some((c) => c && c.id !== null && c.id !== target)) agreement = text('与队友不一致：两狼都确认后若仍不一致将空刀', { size: 13, color: theme.danger });
-  }
-
+    : [text('你是唯一存活的狼人，你的选择直接生效', { size: 15 })];
+  const hint = revote
+    ? `平票重投：只能在 ${revote.map((t) => (t ? seatOf(ctx, t) : '空刀')).join('、')} 中选择，再次平票则空刀`
+    : v.rules.wolfKill === 'majority'
+      ? '选择今晚的目标：最高票生效，平票重投一次（可自刀、可空刀）'
+      : '选择今晚的目标：全体狼人一致才生效（可自刀、可空刀）';
   return column({ flex: 1, gap: 12 }, [
-    text('选择今晚的目标（两狼一致才生效，可自刀）', { size: 15, color: theme.muted }),
+    text(hint, { size: 14, color: theme.muted }),
     card(mateLines, { gap: 6, padding: 12, borderColor: theme.wolf }),
     playerGrid(ctx, {
-      // 狼人可以刀任意存活玩家，包括自己和队友
-      selectable: (id) => !v.submitted && isAliveId(id),
+      selectable: (id) => !v.submitted && allowed(id),
       selected: target,
       onSelect: select,
       badge: (id) => {
-        const marks = aliveMates
-          .filter((m) => mateChoice(m)?.id === id)
-          .map((m) => `${seat(m)}${mateChoice(m)!.confirmed ? '已确认' : '想刀'}`);
-        return [mates.includes(id) ? '队友' : null, ...marks].filter(Boolean).join(' ') || null;
+        const marks = aliveMates.filter((m) => mateChoice(m)?.id === id).map((m) => `${seatOf(ctx, m)}${mateChoice(m)!.confirmed ? '已确认' : '想刀'}`);
+        return [w.teammates.includes(id) ? '队友' : null, ...marks].filter(Boolean).join(' ') || null;
       },
     }),
-    agreement,
     spacer(1),
     commandBar(ctx),
     v.submitted
-      ? text(`你已确认：${votes[me] ? ctx.nameOf(votes[me]!) : '弃权'}，等待队友`, { align: 'center', color: theme.muted })
+      ? text(`你已确认：${votes[me] ? ctx.nameOf(votes[me]!) : '空刀'}，等待队友`, { align: 'center', color: theme.muted })
       : row({ gap: 10 }, [
-          button('确认击杀', { onPress: target ? () => submit(ctx, { type: 'WOLF_VOTE', targetId: target }) : undefined, flex: 1, variant: 'danger' }),
-          button('弃权', { onPress: () => submit(ctx, { type: 'WOLF_VOTE', targetId: null }), variant: 'secondary', width: 90 }),
+          button('确认袭击', { onPress: target && allowed(target) ? () => submit(ctx, { type: 'WOLF_VOTE', targetId: target }) : undefined, flex: 1, variant: 'danger' }),
+          button('空刀', { onPress: allowed(null) ? () => submit(ctx, { type: 'WOLF_VOTE', targetId: null }) : undefined, variant: 'secondary', width: 90 }),
         ]),
-  ]);
-}
-
-function seerPanel(ctx: Ctx): UINode {
-  const v = ctx.view;
-  const target = (ctx.local.target as string | undefined) ?? null;
-  const checks = v.seer?.checks ?? {};
-  // 本人与已查验过的玩家置灰不可选
-  const canCheck = (id: string): boolean => id !== v.me?.playerId && !(id in checks) && !!v.players.find((p) => p.playerId === id)?.alive;
-  const anyTarget = v.players.some((p) => canCheck(p.playerId));
-  return column({ flex: 1, gap: 12 }, [
-    text(anyTarget ? '选择一名玩家查验阵营（已查验过的不可再选）' : '其他存活玩家都已查验过', { size: 15, color: theme.muted }),
-    playerGrid(ctx, {
-      selectable: (id) => !v.submitted && canCheck(id),
-      selected: target,
-      onSelect: (id) => ctx.setLocal({ target: id }),
-      badge: (id) => (checks[id] ? (checks[id] === 'wolf' ? '狼人' : '好人') : null),
-    }),
-    spacer(1),
-    commandBar(ctx),
-    anyTarget
-      ? button('查验', { onPress: target && !v.submitted ? () => submit(ctx, { type: 'SEER_CHECK', targetId: target }) : undefined, height: 52 })
-      : button('今晚不查验', { onPress: v.submitted ? undefined : () => submit(ctx, { type: 'SEER_PASS' }), height: 52, variant: 'secondary' }),
-  ]);
-}
-
-/** 查验完成后：展示结果并本地倒计时，提醒在倒计时结束前闭眼 */
-function seerRevealPanel(ctx: Ctx): UINode {
-  const seer = ctx.view.seer!;
-  const check = seer.lastCheck!;
-  const startedAt = ctx.local.revealAt as number | undefined;
-  if (startedAt === undefined) ctx.setLocal({ revealAt: ctx.now });
-  const elapsed = startedAt === undefined ? 0 : ctx.now - startedAt;
-  const secs = Math.max(0, Math.ceil((seer.revealMs - elapsed) / 1000));
-  if (secs > 0) ctx.keepTicking();
-  const isWolf = check.team === 'wolf';
-  return column({ flex: 1, gap: 16, align: 'center', justify: 'center' }, [
-    text('查验结果', { size: 16, color: theme.muted, align: 'center' }),
-    text(ctx.nameOf(check.targetId), { size: 22, weight: 'bold', align: 'center' }),
-    text(isWolf ? '狼人' : '好人', { size: 44, weight: 'bold', align: 'center', color: isWolf ? theme.wolf : theme.good }),
-    column({ width: 96, height: 96, radius: 48, bg: theme.surfaceAlt, borderColor: theme.primary, borderWidth: 2, align: 'center', justify: 'center' }, [
-      text(secs > 0 ? String(secs) : '0', { size: 40, weight: 'bold', align: 'center', color: theme.primary }),
-    ]),
-    text(secs > 0 ? '请记住结果，倒计时结束前请闭眼' : '请闭眼', { size: 17, align: 'center', color: secs > 0 ? theme.text : theme.primary }),
   ]);
 }
 
 function witchPanel(ctx: Ctx): UINode {
   const v = ctx.view;
   const w = v.witch!;
-  const mode = (ctx.local.mode as 'poison' | undefined) ?? null;
-  const target = (ctx.local.target as string | undefined) ?? null;
-  if (mode === 'poison') {
-    return column({ flex: 1, gap: 12 }, [
-      text('选择要使用毒药的玩家', { size: 15, color: theme.muted }),
-      playerGrid(ctx, {
-        selectable: (id) => id !== v.me?.playerId && !!v.players.find((p) => p.playerId === id)?.alive,
-        selected: target,
-        onSelect: (id) => ctx.setLocal({ target: id }),
-      }),
-      spacer(1),
-      commandBar(ctx),
-      row({ gap: 10 }, [
-        button('确认用毒', { onPress: target ? () => submit(ctx, { type: 'WITCH_ACTION', action: 'poison', targetId: target }) : undefined, flex: 1, variant: 'danger' }),
-        button('返回', { onPress: () => ctx.setLocal({ mode: null, target: null }), variant: 'secondary', width: 90 }),
-      ]),
-    ]);
+  if (ctx.local.mode === 'poison') {
+    return targetPanel(ctx, {
+      hint: '选择要使用毒药的玩家（不能毒自己）',
+      can: (id) => id !== v.me?.playerId && isAliveId(ctx, id),
+      confirm: '确认用毒',
+      danger: true,
+      onConfirm: (id) => ({ type: 'WITCH_ACTION', action: 'poison', targetId: id }),
+      extra: button('返回', { onPress: () => ctx.setLocal({ mode: null, target: null }), variant: 'ghost', height: 36, size: 14 }),
+    });
   }
+  const selfTarget = w.wolfTarget === v.me?.playerId;
   return column({ flex: 1, gap: 12 }, [
     card([
       text('今晚的情况', { size: 14, color: theme.muted }),
-      text(
-        w.antidote ? (w.wolfTarget ? `${ctx.nameOf(w.wolfTarget)} 被狼人选中` : '今晚无人被狼人选中') : '解药已用完，无法得知今晚情况',
-        { size: 18, weight: 'bold' },
-      ),
+      text(w.antidote ? (w.wolfTarget ? `${ctx.nameOf(w.wolfTarget)} 被狼人袭击` : '今晚是空刀') : '解药已用完，无法得知今晚刀口', { size: 18, weight: 'bold' }),
+      selfTarget && !w.canSave ? text('本局规则不允许自救', { size: 13, color: theme.danger }) : null,
+      text('同一夜最多使用一种药', { size: 13, color: theme.muted }),
     ]),
     spacer(1),
     commandBar(ctx),
-    button(w.canSave ? '使用解药' : '解药不可用', { onPress: w.canSave ? () => submit(ctx, { type: 'WITCH_ACTION', action: 'save' }) : undefined, height: 52, variant: 'primary' }),
+    button(w.canSave ? '使用解药' : '解药不可用', { onPress: w.canSave ? () => submit(ctx, { type: 'WITCH_ACTION', action: 'save' }) : undefined, height: 52 }),
     button(w.poison ? '使用毒药…' : '毒药已用', { onPress: w.poison ? () => ctx.setLocal({ mode: 'poison' }) : undefined, height: 52, variant: 'danger' }),
     button('今晚不用药', { onPress: () => submit(ctx, { type: 'WITCH_ACTION', action: 'pass' }), height: 52, variant: 'secondary' }),
   ]);
 }
 
-function lastResults(ctx: Ctx): UINode | null {
-  const h = ctx.view.history;
-  if (!h.length) return null;
-  const items = h.slice(-2).map((r) => {
-    if (r.kind === 'night') return `第${r.round}夜：${r.deaths.length ? `${r.deaths.map(ctx.nameOf).join('、')} 死亡` : '平安夜'}`;
-    const votes = Object.entries(r.votes ?? {})
-      .map(([from, to]) => `${ctx.nameOf(from).split(' ')[0]}→${to ? ctx.nameOf(to).split(' ')[0] : '弃'}`)
-      .join(' ');
-    return `第${r.round}天：${r.exiled ? `${ctx.nameOf(r.exiled)} 被放逐` : '无人放逐'}\n${votes}`;
+function seerPanel(ctx: Ctx): UINode {
+  const v = ctx.view;
+  const checks = v.seer?.checks ?? {};
+  return targetPanel(ctx, {
+    hint: '选择一名其他存活玩家查验阵营（可重复查验）',
+    can: (id) => id !== v.me?.playerId && isAliveId(ctx, id),
+    confirm: '查验',
+    onConfirm: (id) => ({ type: 'SEER_CHECK', targetId: id }),
+    skip: { label: '今晚不查验', action: { type: 'SEER_PASS' } },
+    extra: Object.keys(checks).length
+      ? text(`已查验：${Object.entries(checks).map(([id, t]) => `${seatOf(ctx, id)}${t === 'wolf' ? '狼' : '好'}`).join(' ')}`, { size: 13, color: theme.muted })
+      : null,
   });
-  return card(items.map((s) => text(s, { size: 14 })), { gap: 6 });
 }
 
-function discussPanel(ctx: Ctx): UINode {
+/** 查验完成后：展示结果，提醒在倒计时结束前闭眼 */
+function seerRevealPanel(ctx: Ctx): UINode {
+  const check = ctx.view.seer!.lastCheck!;
+  const isWolf = check.team === 'wolf';
+  return column({ flex: 1, gap: 16, align: 'center', justify: 'center' }, [
+    text('查验结果', { size: 16, color: theme.muted, align: 'center' }),
+    text(ctx.nameOf(check.targetId), { size: 22, weight: 'bold', align: 'center' }),
+    text(isWolf ? '狼人' : '好人', { size: 44, weight: 'bold', align: 'center', color: isWolf ? theme.wolf : theme.good }),
+    text('请记住结果，稍后自动闭眼', { size: 17, align: 'center' }),
+  ]);
+}
+
+// ---- 死亡处理 -------------------------------------------------------------
+
+function hunterPanel(ctx: Ctx): UINode {
+  const v = ctx.view;
+  if (!v.hunter?.canShoot) return waiting(ctx, '你被毒杀出局', '被毒杀时不能开枪', '☠️');
+  return targetPanel(ctx, {
+    hint: '你已出局，可以开枪带走一名存活玩家（公开），也可以放弃',
+    can: (id) => id !== v.me?.playerId && isAliveId(ctx, id),
+    confirm: '开枪',
+    danger: true,
+    onConfirm: (id) => ({ type: 'HUNTER_SHOOT', targetId: id }),
+    skip: { label: '放弃开枪', action: { type: 'HUNTER_SHOOT', targetId: null } },
+  });
+}
+
+function badgePanel(ctx: Ctx): UINode {
+  return targetPanel(ctx, {
+    hint: '你已出局，请把警徽移交给一名存活玩家，或撕毁警徽',
+    can: (id) => isAliveId(ctx, id),
+    confirm: '移交警徽',
+    onConfirm: (id) => ({ type: 'BADGE_PASS', targetId: id }),
+    skip: { label: '撕毁警徽', action: { type: 'BADGE_PASS', targetId: null } },
+  });
+}
+
+// ---- 白天 ---------------------------------------------------------------
+
+function speechPanel(ctx: Ctx): UINode {
+  const v = ctx.view;
+  const sp = v.speech;
+  const mine = v.pendingAction === 'speak';
+  const label = v.phase === 'last-words' ? '遗言' : '发言';
   return column({ flex: 1, gap: 12 }, [
-    lastResults(ctx),
-    playerGrid(ctx, {}),
+    sp
+      ? card([
+          text(`${v.phase === 'last-words' ? '正在发表遗言' : '当前发言'}：${ctx.nameOf(sp.current)}`, { size: 18, weight: 'bold', color: mine ? theme.primary : theme.text }),
+          text(`顺序：${sp.order.map((id) => seatOf(ctx, id)).join(' → ')}`, { size: 13, color: theme.muted }),
+          v.candidates?.length ? text(`候选：${v.candidates.map((id) => seatOf(ctx, id)).join('、')}`, { size: 13, color: theme.muted }) : null,
+        ])
+      : null,
+    playerGrid(ctx, { badge: (id) => (v.candidates?.includes(id) ? '候选' : null) }),
     spacer(1),
-    text('线下自由讨论。由房主控制结束讨论。', { size: 14, color: theme.muted, align: 'center' }),
-    ctx.isHost ? button('结束讨论，开始投票', { onPress: () => submit(ctx, { type: 'END_DISCUSSION' }), height: 52 }) : null,
     commandBar(ctx),
+    // 结束发言 / 房主跳过 / 提示与退水同一行，避免 9 人局展开身份卡时超出屏幕
+    row({ gap: 10 }, [
+      mine
+        ? button(`结束${label}`, { onPress: () => submit(ctx, { type: 'END_SPEECH' }), height: 52, flex: 1 })
+        : (skipSpeechButton(ctx) ?? text(`请安静聆听${label}，不要插话`, { align: 'center', color: theme.muted, size: 13, flex: 1 })),
+      v.canWithdraw ? button('退水', { onPress: () => submit(ctx, { type: 'SHERIFF_WITHDRAW' }), variant: 'secondary', width: 90, height: mine ? 52 : 40 }) : null,
+    ]),
   ]);
 }
 
 function votePanel(ctx: Ctx): UINode {
   const v = ctx.view;
-  const target = (ctx.local.target as string | undefined) ?? null;
-  const voters = v.players.filter((p) => p.alive).length;
-  const progress = text(`已投票 ${v.votedCount}/${voters}，全部投完后公布结果`, { align: 'center', color: theme.muted, size: 13 });
+  const progress = v.progress ? text(`已投票 ${v.progress.done}/${v.progress.total}，全部投完或时间到后公布票型`, { align: 'center', color: theme.muted, size: 13 }) : null;
+  const sheriffVote = v.phase === 'sheriff-vote' || v.phase === 'sheriff-pk-vote';
+  const hint = sheriffVote ? '投票选出警长（可弃票）' : `投票放逐一名玩家（不可投自己，可弃票${v.sheriff ? '；警长计 1.5 票' : ''}）`;
+  if (!v.vote) {
+    return column({ flex: 1, gap: 12 }, [
+      text(v.candidates ? `候选：${v.candidates.map((id) => seatOf(ctx, id)).join('、')}` : hint, { size: 15, color: theme.muted }),
+      playerGrid(ctx, { badge: (id) => (v.candidates?.includes(id) ? '候选' : null) }),
+      spacer(1),
+      progress,
+      text('你本轮没有投票权', { align: 'center', color: theme.muted }),
+    ]);
+  }
+  const targets = v.vote.targets;
+  const target = v.submitted ? (v.vote.myVote ?? null) : selectedTarget(ctx);
   return column({ flex: 1, gap: 12 }, [
-    text('投票放逐一名玩家（不可投自己，可弃权）', { size: 15, color: theme.muted }),
+    text(hint, { size: 15, color: theme.muted }),
     playerGrid(ctx, {
-      selectable: (id) => !v.submitted && id !== v.me?.playerId && !!v.players.find((p) => p.playerId === id)?.alive,
-      selected: v.submitted ? (v.myDayVote ?? null) : target,
+      selectable: (id) => !v.submitted && targets.includes(id),
+      selected: target,
       onSelect: (id) => ctx.setLocal({ target: id }),
+      badge: (id) => (v.candidates?.includes(id) ? '候选' : null),
     }),
     spacer(1),
     progress,
     commandBar(ctx),
     v.submitted
-      ? text(`已投票：${v.myDayVote ? ctx.nameOf(v.myDayVote) : '弃权'}`, { align: 'center', color: theme.muted })
+      ? text(`已投票：${v.vote.myVote ? ctx.nameOf(v.vote.myVote) : '弃票'}`, { align: 'center', color: theme.muted })
       : row({ gap: 10 }, [
-          button('确认投票', { onPress: target ? () => submit(ctx, { type: 'DAY_VOTE', targetId: target }) : undefined, flex: 1 }),
-          button('弃权', { onPress: () => submit(ctx, { type: 'DAY_VOTE', targetId: null }), variant: 'secondary', width: 90 }),
+          button('确认投票', { onPress: target ? () => submit(ctx, { type: 'VOTE', targetId: target }) : undefined, flex: 1 }),
+          button('弃票', { onPress: () => submit(ctx, { type: 'VOTE', targetId: null }), variant: 'secondary', width: 90 }),
         ]),
   ]);
 }
 
+function signupPanel(ctx: Ctx): UINode {
+  const v = ctx.view;
+  return column({ flex: 1, gap: 12 }, [
+    card([
+      text('警长竞选', { size: 20, weight: 'bold' }),
+      text('上警的玩家依次竞选发言，警下玩家投票选出警长。警长放逐投票计 1.5 票，并决定每天的发言顺序。', { size: 14, color: theme.muted }),
+    ]),
+    playerGrid(ctx, {}),
+    spacer(1),
+    v.progress ? text(`已选择 ${v.progress.done}/${v.progress.total}`, { align: 'center', color: theme.muted, size: 13 }) : null,
+    commandBar(ctx),
+    v.pendingAction !== 'sheriff-signup'
+      ? null
+      : v.submitted
+        ? text('已提交，等待其他玩家', { align: 'center', color: theme.muted })
+        : row({ gap: 10 }, [
+            button('上警', { onPress: () => submit(ctx, { type: 'SHERIFF_SIGNUP', join: true }), flex: 1 }),
+            button('不上警', { onPress: () => submit(ctx, { type: 'SHERIFF_SIGNUP', join: false }), variant: 'secondary', flex: 1 }),
+          ]),
+  ]);
+}
+
+function orderPanel(ctx: Ctx): UINode {
+  if (ctx.view.pendingAction !== 'sheriff-order') return waiting(ctx, '等待警长', '警长正在选择今天的发言顺序', '🎖️');
+  return column({ flex: 1, gap: 12 }, [
+    text('选择今天的发言顺序：从你相邻的玩家开始，你最后发言（归票）', { size: 15, color: theme.muted }),
+    playerGrid(ctx, {}),
+    spacer(1),
+    commandBar(ctx),
+    button('顺时针（座位号递增）', { onPress: () => submit(ctx, { type: 'SHERIFF_ORDER', dir: 'cw' }), height: 52 }),
+    button('逆时针（座位号递减）', { onPress: () => submit(ctx, { type: 'SHERIFF_ORDER', dir: 'ccw' }), height: 52, variant: 'secondary' }),
+  ]);
+}
+
+// ---- 公开历史与结果 ---------------------------------------------------------
+
+function voteLine(ctx: Ctx, votes: Record<string, string | null>): string {
+  return Object.entries(votes)
+    .map(([from, to]) => `${seatOf(ctx, from)}→${to ? seatOf(ctx, to) : '弃'}`)
+    .join(' ');
+}
+
+function historyLines(ctx: Ctx, entries: readonly PublicEntry[]): { title: string; detail?: string }[] {
+  const seats = (ids: readonly string[]): string => ids.map((id) => seatOf(ctx, id)).join('、');
+  return entries.map((e) => {
+    switch (e.kind) {
+      case 'night':
+        return { title: `第${e.round}夜：${e.deaths.length ? `${seats(e.deaths)} 死亡` : '平安夜'}` };
+      case 'sheriff':
+        return {
+          title: e.tied.length ? `警长竞选：${seats(e.tied)} 平票进入 PK` : e.elected ? `${seatOf(ctx, e.elected)} 当选警长` : '警徽流失，没有警长',
+          detail: e.votes ? voteLine(ctx, e.votes) : e.candidates.length ? `上警：${seats(e.candidates)}` : undefined,
+        };
+      case 'vote':
+        return {
+          title: `第${e.round}天${e.pk ? ' PK' : ''}：${e.tied.length ? `${seats(e.tied)} 平票进入 PK` : e.exiled ? `${seatOf(ctx, e.exiled)} 被放逐` : '无人放逐'}`,
+          detail: voteLine(ctx, e.votes) || undefined,
+        };
+      case 'shot':
+        return { title: `猎人 ${seatOf(ctx, e.shooter)} 开枪带走 ${seatOf(ctx, e.target)}` };
+      case 'explode':
+        return { title: `${seatOf(ctx, e.playerId)} 自爆（狼人）` };
+      case 'badge':
+        return { title: e.to ? `警徽由 ${seatOf(ctx, e.from)} 移交给 ${seatOf(ctx, e.to)}` : `${seatOf(ctx, e.from)} 的警徽被撕毁` };
+    }
+  });
+}
+
+function historyCard(ctx: Ctx, limit: number): UINode | null {
+  const lines = historyLines(ctx, ctx.view.history).slice(-limit);
+  if (!lines.length) return null;
+  return card(
+    lines.map((l) => column({ gap: 2 }, [text(l.title, { size: 14 }), l.detail ? text(l.detail, { size: 12, color: theme.muted }) : null])),
+    { gap: 6, padding: 12 },
+  );
+}
+
 function resultPanel(ctx: Ctx): UINode {
   const r = ctx.view.result!;
-  const title = r.winner === 'draw' ? '平局' : r.winner === 'wolf' ? '狼人阵营胜利' : '好人阵营胜利';
-  const mine = ctx.view.me ? (r.winner === 'draw' ? null : (ctx.view.me.role === 'wolf') === (r.winner === 'wolf')) : null;
-  return column({ flex: 1, gap: 12 }, [
-    text(title, { size: 30, weight: 'bold', align: 'center', color: r.winner === 'wolf' ? theme.wolf : theme.good }),
-    mine === null ? null : text(mine ? '你赢了！' : '你输了', { align: 'center', size: 18 }),
+  const v = ctx.view;
+  const mine = v.me && (r.winner === 'wolf' || r.winner === 'good') ? (v.me.role === 'wolf') === (r.winner === 'wolf') : null;
+  const nightLine = (n: (typeof r.nights)[number]): string => {
+    const parts = [`刀 ${n.wolfTarget ? seatOf(ctx, n.wolfTarget) : '空'}`];
+    if (n.witch) parts.push(`${n.witch.kind === 'save' ? '救' : '毒'} ${seatOf(ctx, n.witch.target)}`);
+    if (n.seer) parts.push(`验 ${seatOf(ctx, n.seer.target)}${n.seer.team === 'wolf' ? '狼' : '好'}`);
+    return `第${n.round}夜：${parts.join('，')}`;
+  };
+  return column({ flex: 1, gap: 10 }, [
+    text(WINNER_NAME[r.winner], { size: 28, weight: 'bold', align: 'center', color: r.winner === 'wolf' ? theme.wolf : r.winner === 'good' ? theme.good : theme.text }),
+    mine === null ? null : text(mine ? '你赢了！' : '你输了', { align: 'center', size: 17 }),
     card(
-      ctx.view.players.map((p) =>
-        row({ justify: 'space-between' }, [
-          text(`${ctx.nameOf(p.playerId)}${p.alive ? '' : '（出局）'}`, { size: 15, flex: 1 }),
-          text(ROLE_NAME[r.roles[p.playerId]!], { size: 15, weight: 'bold', color: roleColor(r.roles[p.playerId]!) }),
-        ]),
-      ),
+      v.players.map((p) => {
+        const d = r.deaths[p.playerId];
+        return row({ justify: 'space-between', gap: 8 }, [
+          text(ctx.nameOf(p.playerId), { size: 14, flex: 1, maxLines: 1 }),
+          text(d ? `第${d.round}${d.at === 'night' ? '夜' : '天'} ${d.causes.map((c) => CAUSE_NAME[c]).join('+')}` : '存活', { size: 12, color: theme.muted }),
+          text(ROLE_NAME[r.roles[p.playerId]!], { size: 14, weight: 'bold', color: roleColor(r.roles[p.playerId]!) }),
+        ]);
+      }),
+      { gap: 6, padding: 12 },
     ),
-    lastResults(ctx),
+    r.nights.length ? card(r.nights.slice(-4).map((n) => text(nightLine(n), { size: 13 })), { gap: 4, padding: 12 }) : null,
     spacer(1),
-    ctx.isHost ? text('房主可返回房间开始新一局', { align: 'center', color: theme.muted, size: 13 }) : text('等待房主开始新一局', { align: 'center', color: theme.muted, size: 13 }),
+    text(ctx.isHost ? '房主可返回房间开始新一局' : '等待房主开始新一局', { align: 'center', color: theme.muted, size: 13 }),
+    spacer(0.6),
   ]);
 }
 
@@ -380,84 +553,67 @@ function phasePanel(ctx: Ctx): UINode {
     case 'reveal':
       return revealPanel(ctx);
     case 'night-wolf':
-      return v.pendingAction === 'wolf-vote' ? wolfPanel(ctx) : waitingNight(ctx);
-    case 'night-seer':
-      if (v.pendingAction === 'seer-check' && !v.submitted) return seerPanel(ctx);
-      return v.seer?.lastCheck ? seerRevealPanel(ctx) : waitingNight(ctx);
+      return v.pendingAction === 'wolf-vote' && v.wolf ? wolfPanel(ctx) : waitingNight(ctx);
     case 'night-witch':
       return v.pendingAction === 'witch' && !v.submitted ? witchPanel(ctx) : waitingNight(ctx);
-    case 'day-discuss':
-      return discussPanel(ctx);
-    case 'day-vote':
-      return votePanel(ctx);
+    case 'night-seer':
+      if (v.seer?.lastCheck) return seerRevealPanel(ctx);
+      return v.pendingAction === 'seer-check' && !v.submitted ? seerPanel(ctx) : waitingNight(ctx);
+    case 'hunter':
+      // 无论本批次是否有猎人，其他玩家看到的界面一致
+      return v.pendingAction === 'hunter' || v.hunter ? hunterPanel(ctx) : waiting(ctx, '技能结算中', '请等待', '⏳');
+    case 'badge':
+      return v.pendingAction === 'badge' ? badgePanel(ctx) : waiting(ctx, '移交警徽', '出局的警长正在移交警徽', '🎖️');
+    case 'sheriff-signup':
+      return signupPanel(ctx);
+    case 'sheriff-order':
+      return orderPanel(ctx);
+    case 'finished':
+      return waiting(ctx, '游戏结束', '');
     default:
-      return waitingNight(ctx);
+      if (v.speech) return speechPanel(ctx);
+      return votePanel(ctx);
   }
 }
 
-/** 公开战况：全部公开历史（夜间死亡、白天放逐与票型） */
-function publicHistory(ctx: Ctx): UINode {
-  const all = ctx.view.history;
-  if (!all.length) return text('暂无公开结果', { size: 14, color: theme.muted });
-  // 屏幕高度有限：只显示最近 6 条
-  const h = all.slice(-6);
-  const items = h.map((r) => {
-    if (r.kind === 'night') return text(`第${r.round}夜：${r.deaths.length ? `${r.deaths.map(ctx.nameOf).join('、')} 死亡` : '平安夜'}`, { size: 14 });
-    const votes = Object.entries(r.votes ?? {})
-      .map(([from, to]) => `${ctx.nameOf(from).split(' ')[0]}→${to ? ctx.nameOf(to).split(' ')[0] : '弃'}`)
-      .join(' ');
-    return column({ gap: 2 }, [
-      text(`第${r.round}天：${r.exiled ? `${ctx.nameOf(r.exiled)} 被放逐` : '无人放逐'}`, { size: 14 }),
-      votes ? text(votes, { size: 12, color: theme.muted }) : null,
-    ]);
-  });
-  return column({ gap: 8 }, items);
-}
-
-/** 出局方式：只用公开信息（第几夜死亡 / 第几天被放逐） */
-function eliminationText(ctx: Ctx): string {
-  const me = ctx.view.me!.playerId;
-  const entry = ctx.view.history.find((r) => r.deaths.includes(me));
-  if (!entry) return '你已出局';
-  return entry.kind === 'night' ? `你在第 ${entry.round} 夜出局` : `你在第 ${entry.round} 天被投票放逐`;
-}
-
-/** 出局玩家：不可再操作，只展示出局信息与当前公开战况 */
+/** 出局玩家：只展示公开战况；仍有待处理的死亡技能 / 警徽 / 遗言时显示对应操作 */
 function eliminatedScreen(ctx: Ctx): UINode {
   const v = ctx.view;
-  const alive = v.players.filter((p) => p.alive).length;
+  const aliveCount = v.players.filter((p) => p.alive).length;
+  const skip = skipSpeechButton(ctx);
+  const d = v.history.find((e) => (e.kind === 'night' && e.deaths.includes(v.me!.playerId)) || (e.kind === 'vote' && e.exiled === v.me!.playerId));
+  const how = !d ? '你已出局' : d.kind === 'night' ? `你在第 ${d.round} 夜出局` : `你在第 ${d.round} 天被放逐`;
   return column({ flex: 1, padding: [ctx.safeArea.top + 12, 16, ctx.safeArea.bottom + 16, 16], gap: 12, bg: theme.bg }, [
-    column({ gap: 2 }, [
-      text(`第 ${v.round} 轮 · ${PHASE_NAME[v.phase]}`, { size: 13, color: theme.muted }),
-      text('公开战况', { size: 19, weight: 'bold' }),
-    ]),
+    column({ gap: 2 }, [text(`第 ${v.round} 轮 · ${PHASE_NAME[v.phase]}`, { size: 13, color: theme.muted }), text('公开战况', { size: 19, weight: 'bold' })]),
     card(
       [
         text('你已出局', { size: 22, weight: 'bold', color: theme.danger }),
-        text(eliminationText(ctx), { size: 15 }),
-        text('不能再投票或使用技能，请安静旁观，不要透露身份', { size: 13, color: theme.muted }),
+        text(how, { size: 15 }),
+        text('不能再发言、投票或使用技能，请安静旁观，不要透露身份', { size: 13, color: theme.muted }),
       ],
       { borderColor: theme.danger },
     ),
-    text(`存活 ${alive} 人 · 出局 ${v.players.length - alive} 人`, { size: 14, color: theme.muted }),
+    text(`存活 ${aliveCount} 人 · 出局 ${v.players.length - aliveCount} 人`, { size: 14, color: theme.muted }),
     playerGrid(ctx, {}),
-    v.phase === 'day-vote' ? text(`投票进行中：已投票 ${v.votedCount}/${alive}`, { size: 14, color: theme.muted }) : null,
-    card([publicHistory(ctx)], { gap: 8 }),
+    v.progress ? text(`进行中：${v.progress.done}/${v.progress.total}`, { size: 14, color: theme.muted }) : null,
+    historyCard(ctx, skip ? 3 : 5),
     spacer(1),
-    // 房主出局后仍负责主持：保留结束讨论的公共控制
-    ctx.isHost && v.phase === 'day-discuss' ? button('结束讨论，开始投票（房主）', { onPress: () => submit(ctx, { type: 'END_DISCUSSION' }), height: 52 }) : null,
+    skip ? row({}, [skip]) : null,
   ]);
 }
 
 export const werewolfPresentation: GamePresentation = {
   render(raw) {
     const ctx = raw as Ctx;
-    if (ctx.view.me && !ctx.view.me.alive && !ctx.view.result) return eliminatedScreen(ctx);
-    const night = isNight(ctx.view.phase);
+    const v = ctx.view;
+    if (v.me && !v.me.alive && !v.result && !v.pendingAction && !v.hunter) return eliminatedScreen(ctx);
+    const night = isNight(v.phase);
+    const day = !night && v.phase !== 'reveal' && !v.result;
     return column({ flex: 1, padding: [ctx.safeArea.top + 12, 16, ctx.safeArea.bottom + 16, 16], gap: 12, bg: night ? theme.night : theme.bg }, [
       topBar(ctx),
       roleCard(ctx),
       phasePanel(ctx),
+      day && !ctx.local.showRole && v.phase !== 'sheriff-signup' && v.speech === null && !v.vote ? historyCard(ctx, 2) : null,
     ]);
   },
 };

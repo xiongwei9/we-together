@@ -53,7 +53,7 @@ export function App() {
   const [descriptors, setDescriptors] = useState<readonly { instanceId: string }[]>([]);
   const [zoomed, setZoomed] = useState<string | null>(null);
   const [selected, setSelected] = useState<string>('p1');
-  const [columns, setColumns] = useState<number>(3);
+  const [columns, setColumns] = useState<number>(6);
   const [autoBot, setAutoBot] = useState(false);
   const [roomPassword, setRoomPassword] = useState('');
 
@@ -84,11 +84,15 @@ export function App() {
         <label>
           游戏
           <select value={cfg.gameId} onChange={(e) => setCfg({ ...cfg, gameId: e.target.value })}>
-            <option value="werewolf">狼人杀 · 六人局</option>
+            <option value="werewolf">狼人杀</option>
           </select>
         </label>
         <label>
-          玩家数 <input value={cfg.playerCount} disabled style={{ width: 32 }} />
+          玩家数
+          <select value={cfg.playerCount} onChange={(e) => setCfg({ ...cfg, playerCount: Number(e.target.value) })}>
+            <option value={6}>6（预女局）</option>
+            <option value={9}>9（预女猎局）</option>
+          </select>
         </label>
         <label>
           Seed

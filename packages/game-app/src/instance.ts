@@ -23,6 +23,7 @@ import {
   type Transport,
 } from '@we/multiplayer';
 import type { GamePluginDefinition, GameSceneContext } from './contract';
+import { pickNickname } from './nicknames';
 import {
   errorText,
   playerName,
@@ -31,6 +32,7 @@ import {
   renderJoin,
   renderLobby,
   renderManualJoin,
+  renderRules,
   wrapGame,
   type AppActions,
   type AppModel,
@@ -51,7 +53,10 @@ interface GameInstanceOptions {
   gameConfig?: unknown;
   /** 仅模拟器：开启 Host Inspector / Debug Port */
   debug?: boolean;
+  /** 初始昵称；不提供且本机没有保存过昵称时，从昵称池随机分配 */
   defaultNickname?: string;
+  /** 期望座位号（例如 Web 模拟器实例 pN 坐 N 号）；被占用时由 Host 分配最小空位 */
+  seatHint?: number;
 }
 
 export interface InstanceStatus {
@@ -69,8 +74,11 @@ export interface InstanceStatus {
 
 /** 与 UI 按钮相同的玩家操作 API；模拟器批量操作也只能通过这里 */
 interface GameActions {
-  /** password 为 undefined 时弹出可选密码输入；传空串表示不设密码 */
-  createRoom(options?: { nickname?: string; password?: string }): Promise<boolean>;
+  /**
+   * password 为 undefined 时弹出可选密码输入；传空串表示不设密码。
+   * rules：开房时的规则取值（key → value），之后房主仍可在大厅修改
+   */
+  createRoom(options?: { nickname?: string; password?: string; rules?: Record<string, string> }): Promise<boolean>;
   searchRooms(): void;
   stopSearch(): void;
   /** 加入局域网发现的房间；需要密码且未提供时弹出输入 */
@@ -79,6 +87,8 @@ interface GameActions {
   joinRoom(address: string, password?: string, nickname?: string): Promise<boolean>;
   resumeSaved(): Promise<boolean>;
   setReady(ready: boolean): void;
+  /** 房主在大厅修改一项规则 */
+  setRule(key: string, value: string): void;
   startMatch(): void;
   sendGameAction(action: unknown): string | null;
   leaveRoom(): void;
@@ -147,6 +157,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     nickname: options.defaultNickname ?? '',
     route: 'home',
     form: { address: '', password: '' },
+    showRules: false,
     rooms: [],
     searching: false,
     busy: null,
@@ -177,11 +188,16 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
   const editNickname = async (): Promise<void> => {
     const value = await platform.promptText({ title: '设置昵称', initial: model.nickname, maxLength: 12, placeholder: '最多 12 个字' });
     if (value === null) return;
-    const nick = value.trim().slice(0, 12);
+    setNickname(value.trim().slice(0, 12));
+  };
+
+  const setNickname = (nick: string): void => {
     if (!nick) return;
     patch({ nickname: nick });
     platform.storage.set(NICK_KEY, nick).catch(() => undefined);
   };
+
+  const randomizeNickname = async (): Promise<void> => setNickname(await pickNickname(platform.random, model.nickname));
 
   const disposeHost = (): void => {
     host?.dispose();
@@ -189,7 +205,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     model.hostInfo = null;
   };
 
-  const createRoom = async (opts: { nickname?: string; password?: string } = {}): Promise<boolean> => {
+  const createRoom = async (opts: { nickname?: string; password?: string; rules?: Record<string, string> } = {}): Promise<boolean> => {
     if (!client || !net || !ids || model.busy) return false;
     if (opts.nickname) patch({ nickname: opts.nickname });
     const nick = await ensureNickname();
@@ -199,6 +215,14 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       const input = await platform.promptText({ title: '房间密码（可选，留空则不设密码）', maxLength: MAX_PASSWORD, placeholder: '不填则任何同一 Wi-Fi 的玩家都可加入' });
       if (input === null) return false;
       password = input;
+    }
+    let config: unknown = options.gameConfig ?? game.rules.defaultConfig;
+    for (const [key, value] of Object.entries(opts.rules ?? {})) {
+      config = game.rules.setRuleOption(config, key, value);
+      if (config === null) {
+        ui?.toast(`规则取值不合法：${key}`);
+        return false;
+      }
     }
     stopSearch();
     patch({ busy: '正在创建房间…' });
@@ -210,7 +234,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         random: platform.random,
         ids,
         plugin: game.rules,
-        config: options.gameConfig,
+        config,
         address: endpoint ? codec.format(endpoint) : null,
         password,
         debug: options.debug,
@@ -222,9 +246,10 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       });
       platform.keepScreenOn(true);
       model.hostInfo = { address: h.address, password: h.password };
-      const ok = await client.join({ link: net.loopbackToHost, hostAddress: h.address ?? '', password: h.password ?? '', nickname: nick });
+      const ok = await client.join({ link: net.loopbackToHost, hostAddress: h.address ?? '', password: h.password ?? '', nickname: nick, seat: options.seatHint });
       if (!ok) disposeHost();
-      patch({ busy: null });
+      // 开房后先展示房间规则，房主可以立即自定义
+      patch({ busy: null, showRules: ok });
       return ok;
     } catch (e) {
       disposeHost();
@@ -240,7 +265,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     const nick = await ensureNickname();
     if (!nick) return false;
     disposeHost();
-    const ok = await client.join({ link: net.remote(ep), hostAddress: codec.format(ep), password, nickname: nick });
+    const ok = await client.join({ link: net.remote(ep), hostAddress: codec.format(ep), password, nickname: nick, seat: options.seatHint });
     if (ok) {
       stopSearch();
       patch({ route: 'home' });
@@ -312,7 +337,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         notify();
       }, 300);
     }
-    patch({ route: 'home' });
+    patch({ route: 'home', showRules: false });
   };
 
   const actions: GameActions = {
@@ -323,6 +348,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     joinRoom,
     resumeSaved,
     setReady: (ready) => roomCommand({ kind: 'ready', ready }),
+    setRule: (key, value) => roomCommand({ kind: 'set-rule', key, value }),
     startMatch: () => roomCommand({ kind: 'start' }),
     sendGameAction: (action) => client?.gameCommand(action) ?? null,
     leaveRoom,
@@ -334,6 +360,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
 
   const appActions: AppActions = {
     editNickname: () => void editNickname(),
+    randomizeNickname: () => void randomizeNickname(),
     createRoom: () => void createRoom(),
     openJoin: () => {
       patch({ route: 'join' });
@@ -361,6 +388,9 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       patch({ saved: null });
     },
     setReady: actions.setReady,
+    setRule: actions.setRule,
+    openRules: () => patch({ showRules: true }),
+    closeRules: () => patch({ showRules: false }),
     startMatch: actions.startMatch,
     leaveRoom,
     reconnect: () =>
@@ -370,7 +400,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     backHome: () => {
       disposeHost();
       client?.leave();
-      patch({ route: 'home' });
+      patch({ route: 'home', showRules: false });
     },
     backToLobby: () => roomCommand({ kind: 'back-to-lobby' }),
     resumeGame: () => roomCommand({ kind: 'resume-game' }),
@@ -433,7 +463,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       if (c.phase === 'in-room' && c.room) {
         if (c.room.status === 'lobby') {
           ui?.setTicking(false);
-          return renderLobby(model, appActions, s);
+          return model.showRules ? renderRules(model, appActions, s) : renderLobby(model, appActions, s);
         }
         const ctx = gameContext();
         if (ctx) {
@@ -476,6 +506,8 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       ui.setScene(scene);
       const savedNick = await platform.storage.get(NICK_KEY).catch(() => null);
       if (savedNick && !model.nickname) model.nickname = savedNick;
+      // 首次启动：从昵称池随机分配并保存，之后保持不变（玩家可「换一个」或手动修改）
+      if (!model.nickname) setNickname(await pickNickname(platform.random));
       try {
         ids = await createIdFactory(platform.random);
         endpoint = await transport.start();
