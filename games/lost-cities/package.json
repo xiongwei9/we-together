@@ -8,7 +8,6 @@
     "./rules": "./src/rules/index.ts"
   },
   "dependencies": {
-    "@we/platform": "workspace:*",
     "@we/framework": "workspace:*",
     "@we/multiplayer": "workspace:*",
     "@we/game-app": "workspace:*"

@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@we/framework": "workspace:*",
     "@we/game-app": "workspace:*",
     "@we/lost-cities": "workspace:*",
     "@we/multiplayer": "workspace:*",

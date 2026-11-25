@@ -51,6 +51,56 @@ tests/                    跨包集成测试（VirtualNetwork 完整对局、命
 
 各子项目的说明见其目录下的 README.md。
 
+## 包依赖关系
+
+依赖单向分层、没有循环：底层包从不反过来依赖使用它的包。各包 `package.json` 只声明源码实际 import 的 `@we/*` 包。
+
+图中自上而下为底层到入口，箭头由被依赖的包指向使用它的包。
+
+```mermaid
+flowchart TD
+  platform["<b>@we/platform</b><br/>平台端口（Clock / Storage / Canvas / Audio…）<br/>/web、/wechat 子路径放平台适配，核心不引用"]
+
+  framework["<b>@we/framework</b><br/>Canvas UI 树<br/>布局 / 命中"]
+  multiplayer["<b>@we/multiplayer</b><br/>协议 / Host / Client<br/>规则契约 / 洗牌"]
+  testing["<b>@we/testing</b><br/>虚拟网络<br/>无头设备"]
+
+  gameapp["<b>@we/game-app</b><br/>createGameInstance + 公共场景<br/>表现插件契约"]
+
+  werewolf["<b>@we/werewolf</b><br/>rules/ → 仅 multiplayer<br/>scenes/ → framework + game-app"]
+  lostcities["<b>@we/lost-cities</b><br/>rules/ → 仅 multiplayer<br/>scenes/ → framework + game-app"]
+
+  wechat["<b>@we/wechat</b><br/>微信入口"]
+  web["<b>@we/web</b><br/>Web 模拟器"]
+
+  platform --> framework & multiplayer & testing
+  multiplayer --> testing
+  framework & multiplayer --> gameapp
+  gameapp --> werewolf & lostcities
+  werewolf & lostcities --> wechat & web
+  testing -. 仅模拟器 .-> web
+```
+
+图中省略了跨层的直接依赖（例如入口、game-app 也直接使用 platform，游戏规则层直接使用 multiplayer），完整列表见下表。
+
+| 包 | 依赖 |
+| --- | --- |
+| `@we/platform` | 无 |
+| `@we/framework` | platform |
+| `@we/multiplayer` | platform |
+| `@we/testing` | platform、multiplayer |
+| `@we/game-app` | platform、framework、multiplayer |
+| `@we/werewolf`、`@we/lost-cities` | framework、multiplayer、game-app |
+| `@we/wechat` | platform、framework、multiplayer、game-app、werewolf、lost-cities |
+| `@we/web` | platform、multiplayer、game-app、testing、werewolf、lost-cities |
+
+约束：
+
+- `platform`、`framework`、`multiplayer`、`game-app` 与游戏不得依赖 `wx`、DOM 或 Node.js API；`@we/platform/web` 只给 `apps/web` 用，`@we/platform/wechat` 只给 `apps/wechat` 用。
+- `game-app` 不依赖任何具体游戏，游戏由入口通过 `games: [...]` 注册。游戏之间互不依赖。
+- 游戏的 `src/rules/` 只依赖 `@we/multiplayer`（规则契约与 `seededShuffle`），不依赖 UI 或平台；`src/scenes/` 才使用 `framework` 与 `game-app`。目前只靠约定与评审保证，`tsconfig.core.json` 只能拦截平台 API。
+- `@we/testing` 只进入模拟器与测试，不进入微信构建。根目录 `tests/` 通过根 `package.json` 的 devDependencies 引用各包。
+
 ## 与设计的对应与偏差
 
 - 构建统一使用 Vite：Web 为常规应用构建，微信为 lib 模式 IIFE 单文件（设计中微信为 esbuild 单独构建）。

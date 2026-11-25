@@ -2,7 +2,7 @@
 
 6 人预女局 / 9 人预女猎局的狼人杀，包括纯规则插件、客户端表现插件和模拟器 Bot。**规则以 [werewolf-6-9-rules.md](werewolf-6-9-rules.md) 为准。**
 
-依赖：`@we/platform`、`@we/framework`、`@we/multiplayer`、`@we/game-app`。
+依赖：`@we/framework`、`@we/multiplayer`、`@we/game-app`（规则层 `src/rules/` 只依赖 `@we/multiplayer`）。
 
 ## 入口
 

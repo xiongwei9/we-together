@@ -38,9 +38,6 @@ importers:
 
   apps/web:
     dependencies:
-      '@we/framework':
-        specifier: workspace:*
-        version: link:../../packages/framework
       '@we/game-app':
         specifier: workspace:*
         version: link:../../packages/game-app
@@ -87,6 +84,9 @@ importers:
 
   apps/wechat:
     dependencies:
+      '@we/framework':
+        specifier: workspace:*
+        version: link:../../packages/framework
       '@we/game-app':
         specifier: workspace:*
         version: link:../../packages/game-app
@@ -121,9 +121,6 @@ importers:
       '@we/multiplayer':
         specifier: workspace:*
         version: link:../../packages/multiplayer
-      '@we/platform':
-        specifier: workspace:*
-        version: link:../../packages/platform
 
   games/werewolf:
     dependencies:
@@ -136,9 +133,6 @@ importers:
       '@we/multiplayer':
         specifier: workspace:*
         version: link:../../packages/multiplayer
-      '@we/platform':
-        specifier: workspace:*
-        version: link:../../packages/platform
 
   packages/framework:
     dependencies:

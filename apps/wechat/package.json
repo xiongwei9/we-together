@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@we/platform": "workspace:*",
+    "@we/framework": "workspace:*",
     "@we/multiplayer": "workspace:*",
     "@we/game-app": "workspace:*",
     "@we/werewolf": "workspace:*",

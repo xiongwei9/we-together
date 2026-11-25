@@ -2,7 +2,7 @@
 
 经典双人五色 60 张版的失落的城市，包括纯规则插件、客户端表现插件和模拟器 Bot。**规则以 [lost-cities-game-rules.md](lost-cities-game-rules.md) 为准。**
 
-依赖：`@we/platform`、`@we/framework`、`@we/multiplayer`、`@we/game-app`。
+依赖：`@we/framework`、`@we/multiplayer`、`@we/game-app`（规则层 `src/rules/` 只依赖 `@we/multiplayer`）。
 
 ## 入口
 
