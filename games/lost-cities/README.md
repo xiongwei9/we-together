@@ -8,7 +8,7 @@
 
 | 入口 | 内容 |
 | --- | --- |
-| `@we/lost-cities` | `lostCitiesGame: GamePluginDefinition`，由 `apps/web` 和 `apps/wechat` 静态注册 |
+| `@we/lost-cities` | `lostCitiesGame: GamePluginDefinition`，由 `apps/web`、`apps/simulator` 和 `apps/wechat` 静态注册 |
 | `@we/lost-cities/rules` | 纯规则，不依赖 UI、网络或平台：`lostCitiesRules`、`projectView`、`chooseBotAction`、`createDeck`、`scoreColumn`，以及 `Card` / `Color` / `LostCitiesAction` / `LostCitiesConfig` / `LostCitiesPlayerView` / `LostCitiesState` 类型 |
 
 ## 结构

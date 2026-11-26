@@ -1,7 +1,7 @@
 import { createGameInstance, type GameInstance, type GamePluginDefinition, type InstanceStatus } from '@we/game-app';
 import { createMemoryStorage, type StoragePort, type Unsubscribe } from '@we/platform';
-import { createFrameScheduler, createRealClock, createWebPlatform, createWebRandom, type FrameScheduler } from '@we/platform/web';
-import { defaultAddressCodec, type AddressCodec, type HostInspection } from '@we/multiplayer';
+import { connectBrowserWebSocket, createFrameScheduler, createRealClock, createWebPlatform, createWebRandom, type FrameScheduler } from '@we/platform/web';
+import { createRelayTransport, defaultAddressCodec, ROOM_CODE, type AddressCodec, type HostInspection } from '@we/multiplayer';
 import {
   NETWORK_PRESETS,
   createSeededRng,
@@ -19,8 +19,17 @@ import {
 export interface SimulationConfig {
   /** 挂载的 app 实例数（玩家设备数） */
   playerCount: number;
+  /**
+   * 模拟的联机方式：
+   * - online：与 Web 版相同，经中继服务器（需 `pnpm dev:server`），凭房间号加入
+   * - lan：与微信版相同，实例之间经 VirtualNetwork 局域网通信，可注入网络故障
+   */
+  network: 'lan' | 'online';
   preset: keyof typeof NETWORK_PRESETS;
 }
+
+/** 联网模式的中继服务器（apps/server，`pnpm dev:server`）；可用 VITE_RELAY_URL 覆盖 */
+export const RELAY_URL = (import.meta.env.VITE_RELAY_URL as string | undefined) ?? `ws://${location.hostname}:8787/relay`;
 
 /** 模拟手机的逻辑屏幕尺寸 */
 export const SIM_VIEWPORT = { width: 390, height: 844 } as const;
@@ -66,8 +75,8 @@ export interface SimulationController {
   setPreset(preset: keyof typeof NETWORK_PRESETS): void;
   setLinkFaults(from: string, to: string, faults: NetworkFaultConfig | null): void;
   /**
-   * 一键：实例 1 用它当前所在的游戏开房（不设密码），其余实例像玩家一样进入同一游戏、
-   * 经局域网发现找到房间并 JOIN（不超过房间人数上限）。返回无法执行的原因
+   * 一键：实例 1 用它当前所在的游戏与联机方式开房（不设密码），其余实例像玩家一样进入同一游戏，
+   * 局域网经广播发现、联网凭房间号加入（不超过房间人数上限）。返回无法执行的原因
    */
   hostAndJoinAll(): Promise<string | null>;
   readyAll(): void;
@@ -113,7 +122,8 @@ export function createSimulationController(games: readonly GamePluginDefinition[
     format: defaultAddressCodec.format,
     parse(text) {
       const t = text.trim();
-      if (/^[\w-]+$/.test(t) && network) return { kind: 'memory', networkId: network.networkId, nodeId: t };
+      // 6 位数字为联网房间号，其余简写为内存网络节点
+      if (!ROOM_CODE.test(t) && /^[\w-]+$/.test(t) && network) return { kind: 'memory', networkId: network.networkId, nodeId: t };
       return defaultAddressCodec.parse(t);
     },
   });
@@ -121,7 +131,8 @@ export function createSimulationController(games: readonly GamePluginDefinition[
   const gameById = (id: string | null | undefined): GamePluginDefinition | undefined => games.find((g) => g.rules.id === id);
 
   const mount = async (r: Record_): Promise<void> => {
-    if (!network || !config || !r.canvas || !r.overlay) return;
+    if (!config || !r.canvas || !r.overlay) return;
+    if (config.network === 'lan' && !network) return;
     r.generation++;
     const index = Number(r.descriptor.instanceId.slice(1));
     // 与真机相同：每台模拟手机使用真随机源
@@ -136,12 +147,16 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       frames,
       muted: r.muted,
     });
-    const transport = network.createTransport(r.descriptor.instanceId);
+    // 联网：每个实例各自通过真实 WebSocket 连接中继服务器（第一次开房 / 加入时才连接）
+    const transport =
+      config.network === 'online'
+        ? createRelayTransport({ url: RELAY_URL, connect: connectBrowserWebSocket, clock })
+        : network!.createTransport(r.descriptor.instanceId);
     const instance = createGameInstance({
       instanceId: r.descriptor.instanceId,
       platform,
+      network: config.network,
       transport,
-      // 与微信入口一致注册全部游戏；工具栏选中的游戏排第一，作为首页默认选择
       // 与微信入口相同：注册全部游戏，由玩家在 app 首页选择
       games,
       address: simCodec(),
@@ -196,12 +211,15 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       // 网络故障与 Bot 的随机序列每次创建时随机取种子
       const seed = Math.floor(Math.random() * 0x7fffffff);
       botRng = createSeededRng(seed);
-      network = createVirtualNetwork({ networkId: simulationId, clock, seed, faults: NETWORK_PRESETS[cfg.preset] });
-      offPackets = network.subscribePackets((e) => {
-        log.push(e);
-        if (log.length > LOG_LIMIT) log = log.slice(-LOG_LIMIT);
-        notify();
-      });
+      if (cfg.network === 'lan') {
+        const vn = createVirtualNetwork({ networkId: simulationId, clock, seed, faults: NETWORK_PRESETS[cfg.preset] });
+        network = vn;
+        offPackets = vn.subscribePackets((e) => {
+          log.push(e);
+          if (log.length > LOG_LIMIT) log = log.slice(-LOG_LIMIT);
+          notify();
+        });
+      }
       for (let i = 1; i <= cfg.playerCount; i++) {
         const descriptor = { instanceId: `p${i}`, seatHint: i, isHost: i === 1 };
         records.set(descriptor.instanceId, {
@@ -288,9 +306,15 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       const room = h.getStatus().client.room;
       if (!roomId || !room) return '实例 1 创建房间失败';
       const pass = h.getStatus().hostInfo?.password ?? '';
+      const roomCode = config?.network === 'online' ? h.getStatus().hostInfo?.address : null;
       const joinOne = async (inst: GameInstance): Promise<void> => {
-        // 与玩家相同：进入该游戏首页，点「加入房间」广播搜索，等房间出现在列表后加入
         inst.actions.selectGame(gameId);
+        // 联网：与玩家相同，输入房间号加入
+        if (roomCode) {
+          await inst.actions.joinRoom(roomCode, pass);
+          return;
+        }
+        // 局域网：与玩家相同，点「加入房间」广播搜索，等房间出现在列表后加入
         inst.actions.searchRooms();
         for (let i = 0; i < 50; i++) {
           const room = inst.getStatus().rooms.find((r) => r.roomId === roomId);
@@ -345,7 +369,8 @@ export function createSimulationController(games: readonly GamePluginDefinition[
       return [...records.values()].map((r) => ({
         ...r.descriptor,
         attached: !!r.instance,
-        online: network?.isNodeOnline(r.descriptor.instanceId) ?? false,
+        // 联网模式没有虚拟局域网可断开
+        online: network ? network.isNodeOnline(r.descriptor.instanceId) : true,
         status: r.instance?.getStatus() ?? null,
         generation: r.generation,
       }));

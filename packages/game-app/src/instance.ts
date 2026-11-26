@@ -9,6 +9,7 @@ import {
   createRoomBrowser,
   defaultAddressCodec,
   MAX_PASSWORD,
+  ROOM_CODE,
   type AddressCodec,
   type ClientState,
   type DeviceNet,
@@ -47,6 +48,13 @@ import {
 interface GameInstanceOptions {
   instanceId: string;
   platform: Platform;
+  /**
+   * 联机方式由入口决定，app 内不可切换（默认局域网）：
+   * - lan：局域网（微信 UDP / 模拟器内存网络），广播发现房间
+   * - online：联网（中继服务器，Web 无法使用局域网），房主的中继编号即 6 位房间号
+   */
+  network?: 'lan' | 'online';
+  /** 与 network 对应的 Transport：局域网 UDP / 内存网络，或 createRelayTransport */
   transport: Transport;
   /**
    * 已注册的游戏。多于一个时启动进入 app 首页（主题 + 游戏选择），选择游戏后进入该游戏的首页；
@@ -71,7 +79,10 @@ export interface InstanceStatus {
   bootError: string | null;
   endpoint: Endpoint | null;
   isHost: boolean;
+  /** 联网时 address 为房间号 */
   hostInfo: { address: string | null; password: string | null } | null;
+  /** 入口决定的联机方式 */
+  network: 'lan' | 'online';
   /** 局域网发现的房间（仅在「加入房间」页搜索时更新） */
   rooms: readonly DiscoveredRoom[];
   /** 当前所在游戏（游戏首页、加入页或房间内）；在 app 首页为 null */
@@ -128,7 +139,10 @@ export interface GameInstance {
 const NICK_KEY = 'nickname';
 
 export function createGameInstance(options: GameInstanceOptions): GameInstance {
-  const { instanceId, platform, transport } = options;
+  const { instanceId, platform } = options;
+  const { transport } = options;
+  const network = options.network ?? 'lan';
+  const online = network === 'online';
   const codec = options.address ?? defaultAddressCodec;
   const games = options.games;
   if (!games.length) throw new Error('at least one game must be registered');
@@ -171,11 +185,15 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
   };
 
   const model: AppModel = {
-    app: { title: options.app?.title ?? 'We Together', tagline: options.app?.tagline ?? '同一 Wi-Fi，面对面一起玩' },
+    app: {
+      title: options.app?.title ?? 'We Together',
+      tagline: options.app?.tagline ?? (online ? '输入房间号，和朋友一起玩' : '同一 Wi-Fi，面对面一起玩'),
+    },
     games: games.map((g) => ({ id: g.rules.id, title: g.rules.title, icon: g.icon ?? '🎲', summary: g.summary ?? '', rulesVersion: g.rules.rulesVersion })),
     selectedGame: selected.rules.id,
     nickname: options.defaultNickname ?? '',
     route: multiGame ? 'apps' : 'home',
+    network,
     form: { address: '', password: '' },
     showRules: false,
     rooms: [],
@@ -232,10 +250,14 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     if (!nick) return false;
     let password = opts.password;
     if (password === undefined) {
-      const input = await platform.promptText({ title: '房间密码（可选，留空则不设密码）', maxLength: MAX_PASSWORD, placeholder: '不填则任何同一 Wi-Fi 的玩家都可加入' });
+      const placeholder = online ? '不填则任何知道房间号的玩家都可加入' : '不填则任何同一 Wi-Fi 的玩家都可加入';
+      const input = await platform.promptText({ title: '房间密码（可选，留空则不设密码）', maxLength: MAX_PASSWORD, placeholder });
       if (input === null) return false;
       password = input;
     }
+    // 联网房间：房主的中继编号即房间号
+    if (online && !(await ensureOnline())) return false;
+    const address = endpoint ? codec.format(endpoint) : null;
     const game = selected;
     let config: unknown = options.gameConfigs?.[game.rules.id] ?? game.rules.defaultConfig;
     for (const [key, value] of Object.entries(opts.rules ?? {})) {
@@ -256,7 +278,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
         ids,
         plugin: game.rules,
         config,
-        address: endpoint ? codec.format(endpoint) : null,
+        address,
         password,
         debug: options.debug,
         onAnnounce: (t) => platform.audio.announce(t),
@@ -280,11 +302,27 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     }
   };
 
+  /** 联网：第一次开房 / 加入时才连接中继服务器（启动时不连接，服务器不可达不影响进入 app）；失败时提示并返回 false */
+  const ensureOnline = async (): Promise<boolean> => {
+    if (endpoint) return true;
+    patch({ busy: '正在连接联网服务器…' });
+    try {
+      endpoint = await transport.start();
+      patch({ busy: null });
+      return true;
+    } catch (e) {
+      patch({ busy: null });
+      ui?.toast(`无法连接联网服务器：${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
+
   const joinEndpoint = async (ep: Endpoint, gameId: string, password: string, nickname?: string): Promise<boolean> => {
     if (!client || !net) return false;
     if (nickname) patch({ nickname });
     const nick = await ensureNickname();
     if (!nick) return false;
+    if (online && !(await ensureOnline())) return false;
     disposeHost();
     const ok = await client.join({ link: net.remote(ep), hostAddress: codec.format(ep), password, nickname: nick, seat: options.seatHint, gameId });
     if (ok) {
@@ -295,9 +333,9 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
   };
 
   const joinRoom = async (address: string, password = '', nickname?: string): Promise<boolean> => {
-    const ep = codec.parse(address);
+    const ep = online && !ROOM_CODE.test(address.trim()) ? null : codec.parse(address);
     if (!ep) {
-      ui?.toast('房间地址格式不正确');
+      ui?.toast(online ? '房间号为 6 位数字' : '房间地址格式不正确');
       return false;
     }
     patch({ form: { address, password } });
@@ -333,6 +371,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
 
   const resumeSaved = async (): Promise<boolean> => {
     if (!client || !model.saved) return false;
+    if (online && !(await ensureOnline())) return false;
     patch({ busy: '正在恢复连接…' });
     const ok = await client.resume(model.saved);
     patch({ busy: null, saved: ok ? null : await client.loadSavedSession() });
@@ -406,6 +445,8 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
     randomizeNickname: () => void randomizeNickname(),
     createRoom: () => void createRoom(),
     openJoin: () => {
+      // 联网：输入房间号；局域网：搜索同一 Wi-Fi 下的房间
+      if (online) return patch({ route: 'manual' });
       patch({ route: 'join' });
       searchRooms();
     },
@@ -418,8 +459,11 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       stopSearch();
       patch({ route: 'manual' });
     },
-    editAddress: () =>
-      void prompt('房间地址（IP:端口）', model.form.address, false, 64).then((v) => v !== null && patch({ form: { ...model.form, address: v.trim() } })),
+    editAddress: () => {
+      void prompt(online ? '房间号（6 位数字）' : '房间地址（IP:端口）', model.form.address, online, online ? 6 : 64).then(
+        (v) => v !== null && patch({ form: { ...model.form, address: v.trim() } }),
+      );
+    },
     editPassword: () =>
       void prompt('房间密码（无密码可留空）', model.form.password, false, MAX_PASSWORD).then(
         (v) => v !== null && patch({ form: { ...model.form, password: v } }),
@@ -554,7 +598,8 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       if (!model.nickname) setNickname(await pickNickname(platform.random));
       try {
         ids = await createIdFactory(platform.random);
-        endpoint = await transport.start();
+        // 联网在第一次开房 / 加入时才连接（ensureOnline）
+        if (!online) endpoint = await transport.start();
       } catch (e) {
         patch({ bootError: e instanceof Error ? e.message : String(e) });
         return;
@@ -563,11 +608,13 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       reliable = createReliableNode({ transport, clock: platform.clock, nextMessageId: () => ids!.next('m') });
       net = createDeviceNet({ reliable, clock: platform.clock });
       client = createPlayerClient({ net, clock: platform.clock, ids, storage: platform.storage, gameId: selected.rules.id });
-      // 多个游戏时广播搜索所有游戏的房间，加入页只列出当前游戏的
-      const b = createRoomBrowser({ net, clock: platform.clock, ids, gameId: multiGame ? undefined : selected.rules.id });
-      browser = b;
+      // 局域网：多个游戏时广播搜索所有游戏的房间，加入页只列出当前游戏的。联网没有房间发现，凭房间号加入
+      if (!online) {
+        const b = createRoomBrowser({ net, clock: platform.clock, ids, gameId: multiGame ? undefined : selected.rules.id });
+        browser = b;
+        offs.push(b.subscribe(() => patch({ rooms: visibleRooms(), searching: b.searching })));
+      }
       offs.push(
-        b.subscribe(() => patch({ rooms: visibleRooms(), searching: b.searching })),
         client.subscribe((s) => {
           const prev = model.client;
           model.client = s;
@@ -602,6 +649,7 @@ export function createGameInstance(options: GameInstanceOptions): GameInstance {
       endpoint,
       isHost: host !== null,
       hostInfo: model.hostInfo,
+      network: model.network,
       rooms: model.rooms,
       gameId: model.client.room?.gameId ?? (model.route === 'apps' ? null : selected.rules.id),
       client: model.client,

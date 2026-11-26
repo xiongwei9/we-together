@@ -1,5 +1,5 @@
 {
   "files.associations": {
-    "**/apps/web/**/*.css": "tailwindcss"
+    "**/apps/simulator/**/*.css": "tailwindcss"
   }
 }

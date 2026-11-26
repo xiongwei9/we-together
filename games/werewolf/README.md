@@ -8,7 +8,7 @@
 
 | 入口 | 内容 |
 | --- | --- |
-| `@we/werewolf` | `werewolfGame: GamePluginDefinition`，由 `apps/web` 和 `apps/wechat` 静态注册 |
+| `@we/werewolf` | `werewolfGame: GamePluginDefinition`，由 `apps/web`、`apps/simulator` 和 `apps/wechat` 静态注册 |
 | `@we/werewolf/rules` | 纯规则，不依赖 UI、网络或平台：`werewolfRules`、`projectView`、`chooseBotAction`、`ROLE_DECKS`，以及 `Role` / `WerewolfAction` / `WerewolfConfig` / `WerewolfPlayerView` / `WerewolfState` 类型 |
 
 ## 结构

@@ -1,5 +1,5 @@
 import { button, card, column, list, modal, pressable, row, spacer, stack, text, theme, type UINode } from '@we/framework';
-import { ERROR_TEXT, type ClientState, type DiscoveredRoom, type RoomPlayer, type RoomView, type RuleOption, type SavedSession } from '@we/multiplayer';
+import { ERROR_TEXT, ROOM_CODE, type ClientState, type DiscoveredRoom, type RoomPlayer, type RoomView, type RuleOption, type SavedSession } from '@we/multiplayer';
 
 /** 公共场景：AppHome（主题 + 游戏选择）/ GameHome / Join / Lobby / Paused / Closed（设计 §12） */
 
@@ -13,6 +13,8 @@ export interface AppModel {
   nickname: string;
   /** apps：app 首页（多游戏）；home：游戏首页；join：局域网房间列表；manual：广播不可用时手动输入地址 */
   route: 'apps' | 'home' | 'join' | 'manual';
+  /** 入口决定的联机方式：局域网（同一 Wi-Fi，微信）或联网（服务器中继、房间号加入，Web） */
+  network: 'lan' | 'online';
   form: { address: string; password: string };
   /** 大厅中显示房间规则页（房主开房后默认打开） */
   showRules: boolean;
@@ -134,30 +136,39 @@ export function renderAppHome(m: AppModel, a: AppActions, safe: { top: number; b
     m.bootError ? text(`网络不可用：${m.bootError}`, { align: 'center', color: theme.danger, size: 14 }) : null,
     m.client.error && m.client.phase !== 'in-room' ? text(errorText(m.client.error), { align: 'center', color: theme.danger }) : null,
     spacer(1),
-    text('局域网联机，无需服务器。所有玩家需连接同一 Wi-Fi。', { size: 12, color: theme.muted, align: 'center' }),
+    text(m.network === 'online' ? '联网对局：输入房间号加入，不需要同一 Wi-Fi。' : '局域网联机，无需服务器。所有玩家需连接同一 Wi-Fi。', {
+      size: 12,
+      color: theme.muted,
+      align: 'center',
+    }),
   ]);
 }
 
-/** 游戏首页：昵称、创建房间、加入房间 */
+/** 游戏首页：昵称、创建房间、加入房间（联网时输入房间号） */
 export function renderHome(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
   const busy = m.busy !== null;
   const game = m.games.find((g) => g.id === m.selectedGame) ?? m.games[0]!;
+  const online = m.network === 'online';
   return screen(safe.top, safe.bottom, [
     m.games.length > 1 ? row({}, [button('‹ 全部游戏', { onPress: busy ? undefined : a.openAppHome, variant: 'ghost', height: 36, size: 15 }), spacer(1)]) : null,
     spacer(0.4),
     text(game.icon, { size: 56, align: 'center' }),
     text(game.title, { size: 30, weight: 'bold', align: 'center', color: theme.primary }),
-    text(`规则 ${game.rulesVersion} · 局域网联机 · 无需服务器`, { size: 13, align: 'center', color: theme.muted }),
+    text(`规则 ${game.rulesVersion}`, { size: 13, align: 'center', color: theme.muted }),
     spacer(0.4),
     nicknameField(m, a),
     savedCard(m, a, busy),
     button('创建房间', { onPress: busy || m.bootError ? undefined : a.createRoom, height: 56 }),
-    button('加入房间', { onPress: busy || m.bootError ? undefined : a.openJoin, variant: 'secondary', height: 56 }),
+    button(online ? '输入房间号加入' : '加入房间', { onPress: busy || m.bootError ? undefined : a.openJoin, variant: 'secondary', height: 56 }),
     m.busy ? text(m.busy, { align: 'center', color: theme.muted }) : null,
     m.bootError ? text(`网络不可用：${m.bootError}`, { align: 'center', color: theme.danger, size: 14 }) : null,
     m.client.error && m.client.phase !== 'in-room' ? text(errorText(m.client.error), { align: 'center', color: theme.danger }) : null,
     spacer(1),
-    text('所有玩家需连接同一局域网（Wi-Fi）。房主设备保持亮屏。', { size: 12, color: theme.muted, align: 'center' }),
+    text(online ? '不需要同一 Wi-Fi。房主创建房间后，把 6 位房间号告诉其他玩家。' : '所有玩家需连接同一局域网（Wi-Fi）。房主设备保持亮屏。', {
+      size: 12,
+      color: theme.muted,
+      align: 'center',
+    }),
   ]);
 }
 
@@ -196,17 +207,21 @@ export function renderJoin(m: AppModel, a: AppActions, safe: { top: number; bott
   ]);
 }
 
+/** 手动加入：局域网按地址（广播搜不到时）；联网按房间号 */
 export function renderManualJoin(m: AppModel, a: AppActions, safe: { top: number; bottom: number }): UINode {
   const joining = m.client.phase === 'joining';
+  const online = m.network === 'online';
+  const busy = joining || m.busy !== null;
   return screen(safe.top, safe.bottom, [
-    header('手动加入', '局域网搜索不到时，向房主索取地址'),
+    online ? header('输入房间号', '向房主索取 6 位房间号') : header('手动加入', '局域网搜索不到时，向房主索取地址'),
     nicknameField(m, a),
-    field('房间地址', m.form.address, '例如 192.168.1.10:20000', a.editAddress),
+    online ? field('房间号', m.form.address, '6 位数字', a.editAddress) : field('房间地址', m.form.address, '例如 192.168.1.10:20000', a.editAddress),
     field('房间密码（可选）', m.form.password ? '•'.repeat(m.form.password.length) : '', '无密码可不填', a.editPassword),
+    m.busy ? text(m.busy, { align: 'center', color: theme.muted }) : null,
     m.client.error ? text(errorText(m.client.error), { color: theme.danger }) : null,
     spacer(1),
-    button(joining ? '连接中…' : '连接', { onPress: joining || !m.form.address || !m.nickname ? undefined : a.submitManualJoin, height: 56 }),
-    button('返回', { onPress: a.openJoin, variant: 'ghost' }),
+    button(joining ? '连接中…' : online ? '加入' : '连接', { onPress: busy || !m.form.address || !m.nickname ? undefined : a.submitManualJoin, height: 56 }),
+    button('返回', { onPress: online ? a.cancelJoin : a.openJoin, variant: 'ghost' }),
   ]);
 }
 
@@ -262,12 +277,20 @@ export function renderLobby(m: AppModel, a: AppActions, safe: { top: number; bot
   for (let i = 0; i < seats.length; i += 3) {
     grid.push(row({ gap: 8 }, [0, 1, 2].map((k) => (i + k < seats.length ? seatTile(seats[i + k]!, i + k + 1, seats[i + k]?.playerId === c.playerId) : spacer(1)))));
   }
+  // 联网房间：房主的中继编号即房间号，所有人都显示以便转告
+  const roomCode = c.hostAddress && ROOM_CODE.test(c.hostAddress) ? c.hostAddress : null;
   return screen(safe.top, safe.bottom, [
-    header(room.gameTitle, `房间 ${room.roomId.slice(-6)} · ${room.players.length}/${room.capacity.max} 人`),
+    header(room.gameTitle, `${roomCode ? `联网房间号 ${roomCode}` : `房间 ${room.roomId.slice(-6)}`} · ${room.players.length}/${room.capacity.max} 人`),
     linkBanner(c, a),
     m.hostInfo
       ? card(
           [
+            m.network === 'online' && m.hostInfo.address
+              ? row({ justify: 'space-between' }, [
+                  text('房间号', { color: theme.muted }),
+                  text(m.hostInfo.address, { size: 26, weight: 'bold', color: theme.primary }),
+                ])
+              : null,
             row({ justify: 'space-between' }, [
               text('房间密码', { color: theme.muted }),
               m.hostInfo.password
@@ -275,7 +298,11 @@ export function renderLobby(m: AppModel, a: AppActions, safe: { top: number; bot
                 : text('未设置', { size: 16, color: theme.muted }),
             ]),
             text(
-              m.hostInfo.address ? `同一 Wi-Fi 下在「加入房间」即可看到；搜索不到时手动输入 ${m.hostInfo.address}` : '同一 Wi-Fi 下的玩家在「加入房间」中即可看到本房间',
+              m.network === 'online'
+                ? '其他玩家在游戏首页点「输入房间号加入」'
+                : m.hostInfo.address
+                  ? `同一 Wi-Fi 下在「加入房间」即可看到；搜索不到时手动输入 ${m.hostInfo.address}`
+                  : '同一 Wi-Fi 下的玩家在「加入房间」中即可看到本房间',
               { size: 12, color: theme.muted },
             ),
           ],

@@ -1,0 +1,14 @@
+{
+  "//": "构建：只编译服务器源码，输出 Node ESM 到 apps/server/dist（运行时从本目录 node_modules 解析依赖）",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"]
+}

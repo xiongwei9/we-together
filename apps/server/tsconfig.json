@@ -1,0 +1,6 @@
+{
+  "//": "类型检查：服务器源码与测试（测试会引用 workspace 中的核心包）",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "lib": ["ES2022"], "types": ["node"] },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

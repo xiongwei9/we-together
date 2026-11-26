@@ -7,7 +7,7 @@
 ## 分层
 
 ```text
-Transport              平台提供的字节数据报（微信 UDP / 测试用 Memory Transport）
+Transport              平台提供的字节数据报（微信 UDP / 测试用 Memory Transport / 联网中继 RelayTransport）
   └─ ReliableNode      可靠 DATA + ACK、应用层分片、去重；心跳走不可靠通道
       └─ DeviceNet     每台设备一个：区分 Host / Client 角色的入站消息，本机 Host↔Client 走 loopback（仍经过编解码）
           ├─ HostAuthority   房间、会话、权威游戏状态；串行处理消息与定时器
@@ -19,7 +19,8 @@ Transport              平台提供的字节数据报（微信 UDP / 测试用 M
 
 | 模块 | 导出 |
 | --- | --- |
-| `transport.ts` | `Transport`、`Endpoint`、`Packet`、`AddressCodec`、`defaultAddressCodec`（`192.168.1.10:20000` 或 `mem:<networkId>/<nodeId>`） |
+| `transport.ts` | `Transport`、`Endpoint`（`udp` / `memory` / `relay`）、`Packet`、`AddressCodec`、`defaultAddressCodec`（`192.168.1.10:20000`、`mem:<networkId>/<nodeId>` 或联网房间号 `123456`）、`ROOM_CODE` |
+| `relay-transport.ts` | `createRelayTransport`：经 WebSocket 连接 `apps/server` 中继；`RelayConnect` / `RelaySocket` 由平台注入（浏览器 WebSocket 等），断线凭令牌重连找回原编号 |
 | `reliable.ts` | `createReliableNode`、`describeDatagram`（Inspector 用，只解析头部） |
 | `device-net.ts` | `createDeviceNet` |
 | `discovery.ts` | `createRoomBrowser`（省略 `gameId` 时搜索所有游戏的房间）、`DiscoveredRoom` |

@@ -17,6 +17,7 @@
 - Core 与 Game Rules 不得依赖 `wx`、DOM、React 或 Node.js API。平台相关逻辑仅放在 `packages/platform/src/web`、`packages/platform/src/wechat` 和 `apps/*`。共享核心由仅配置 `ES2022` 库的 `tsconfig.core.json` 检查。
 - Runtime、Client、Store、Input、Storage 和 Transport 必须支持显式创建多个实例，禁止依赖模块级可变单例、全局 Canvas 或固定玩家 ID。
 - Web Simulator 在同一页面挂载多个实例。所有实例和批量操作都走正常的 Client 命令与状态同步链路，禁止使用 iframe、多 Tab 或直接共享 Host Store 来替代该链路。
+- 联网模式的 `apps/server` 只做中继转发，不运行游戏规则、不解析或记录数据内容；权威状态仍由房主设备的 Host 持有。服务器不引用 `@we/*` 运行时包。
 - 原型与安全模式分离。`debug`、Inspector、`setFixture` 等测试专用入口不得进入微信构建。
 
 ## 协议与状态边界
@@ -29,4 +30,4 @@
 
 - 新增规则、协议或 Transport 行为时同步补充测试。新增微信平台 API 前，核对微信小游戏官方文档和 `minigame-api-typings`。
 - `pnpm test` 运行测试，`pnpm typecheck` 检查共享核心、测试、Web 和微信入口。
-- `pnpm dev:web` 启动 Web Simulator。`pnpm build:web` 和 `pnpm build:wechat` 分别构建 Web 和微信版本。
+- `pnpm dev:simulator` 启动 Web Simulator，`pnpm dev:web` 启动 Web 客户端（仅联网，需同时运行 `pnpm dev:server` 中继服务器）。`pnpm build:web`、`pnpm build:simulator`、`pnpm build:wechat` 和 `pnpm build:server` 分别构建 Web 客户端、模拟器、微信版本和服务器。

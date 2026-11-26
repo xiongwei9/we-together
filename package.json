@@ -5,11 +5,15 @@
   "packageManager": "pnpm@9.12.2",
   "scripts": {
     "dev:web": "pnpm --filter @we/web dev",
+    "dev:simulator": "pnpm --filter @we/simulator dev",
+    "dev:server": "pnpm --filter @we/server dev",
     "build:web": "pnpm --filter @we/web build",
+    "build:simulator": "pnpm --filter @we/simulator build",
     "build:wechat": "pnpm --filter @we/wechat build",
     "build:wechat-poc": "pnpm --filter @we/wechat build:poc",
+    "build:server": "pnpm --filter @we/server build",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.core.json && tsc -p tsconfig.test.json && tsc -p apps/web/tsconfig.json && tsc -p apps/wechat/tsconfig.json"
+    "typecheck": "tsc -p tsconfig.core.json && tsc -p tsconfig.test.json && tsc -p apps/simulator/tsconfig.json && tsc -p apps/web/tsconfig.json && tsc -p apps/wechat/tsconfig.json && tsc -p apps/server/tsconfig.json"
   },
   "devDependencies": {
     "typescript": "~5.9.3",

@@ -3,7 +3,7 @@ import { ERROR_TEXT } from '@we/multiplayer';
 import { NETWORK_PRESETS, type PacketTraceEvent } from '@we/testing';
 import { lostCitiesGame } from '@we/lost-cities';
 import { werewolfGame } from '@we/werewolf';
-import { SIM_VIEWPORT, createSimulationController, type InstanceView, type SimulationConfig, type SimulationController } from './controller';
+import { RELAY_URL, SIM_VIEWPORT, createSimulationController, type InstanceView, type SimulationConfig, type SimulationController } from './controller';
 
 type PresetKey = keyof typeof NETWORK_PRESETS;
 const PRESET_LABEL: Record<string, string> = { ideal: '理想', wifi: '普通 Wi-Fi', poor: '差（5% 丢包/重复/乱序）', terrible: '极差（20% 丢包）' };
@@ -16,6 +16,12 @@ const PLAYER_COUNTS = [
   { value: 6, label: '6（狼人杀预女局）' },
   { value: 9, label: '9（狼人杀预女猎局）' },
 ];
+
+/** 联机方式：联网对应 Web 版，局域网对应微信版 */
+const NETWORK_OPTIONS = [
+  { value: 'lan', label: '局域网（微信版）' },
+  { value: 'online', label: '联网（Web 版，需 pnpm dev:server）' },
+] as const;
 
 const ROLE_FIXTURE = { rolesBySeat: { 1: 'wolf', 2: 'wolf', 3: 'seer', 4: 'witch', 5: 'villager', 6: 'villager' } };
 
@@ -59,6 +65,7 @@ export function App() {
   useTick(controller, 500);
   const [cfg, setCfg] = useState<SimulationConfig>({
     playerCount: 6,
+    network: 'lan',
     preset: 'ideal',
   });
   const [descriptors, setDescriptors] = useState<readonly { instanceId: string }[]>([]);
@@ -85,6 +92,7 @@ export function App() {
 
   const views = controller.instances();
   const simId = controller.simulationId;
+  const lan = controller.config?.network !== 'online';
 
   return (
     <div className="grid h-screen grid-rows-[auto_1fr_220px]">
@@ -101,25 +109,39 @@ export function App() {
               ))}
             </select>
           </label>
-          <button onClick={() => void create()}>创建 / 重置</button>
-          <span className="h-5 w-px bg-line" />
-          <label>
-            网络
-            <select
-              value={controller.config?.preset ?? cfg.preset}
-              onChange={(e) => {
-                const preset = e.target.value as PresetKey;
-                setCfg({ ...cfg, preset });
-                controller.setPreset(preset);
-              }}
-            >
-              {Object.keys(NETWORK_PRESETS).map((k) => (
-                <option key={k} value={k}>
-                  {PRESET_LABEL[k] ?? k}
+          <label title="联网与 Web 版相同（经中继服务器，凭房间号加入）；局域网与微信版相同（广播发现房间）。改后点「创建 / 重置」">
+            联机方式
+            <select value={cfg.network} onChange={(e) => setCfg({ ...cfg, network: e.target.value as SimulationConfig['network'] })}>
+              {NETWORK_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
                 </option>
               ))}
             </select>
           </label>
+          <button onClick={() => void create()}>创建 / 重置</button>
+          <span className="h-5 w-px bg-line" />
+          {lan ? (
+            <label>
+              网络
+              <select
+                value={controller.config?.preset ?? cfg.preset}
+                onChange={(e) => {
+                  const preset = e.target.value as PresetKey;
+                  setCfg({ ...cfg, preset });
+                  controller.setPreset(preset);
+                }}
+              >
+                {Object.keys(NETWORK_PRESETS).map((k) => (
+                  <option key={k} value={k}>
+                    {PRESET_LABEL[k] ?? k}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <span className="text-muted">联网模式：实例经中继服务器 {RELAY_URL} 通信，网络预设与 Packet Inspector 不适用</span>
+          )}
         </div>
         <div className={toolbarRowClass}>
           <button
@@ -153,15 +175,20 @@ export function App() {
                 zoomed={zoomed === d.instanceId}
                 hidden={!!zoomed && zoomed !== d.instanceId}
                 selected={selected === d.instanceId}
+                lan={lan}
                 onSelect={() => setSelected(d.instanceId)}
                 onZoom={() => setZoomed(zoomed === d.instanceId ? null : d.instanceId)}
               />
             );
           })}
         </section>
-        <Inspector controller={controller} views={views} selected={selected} onSelect={setSelected} />
+        <Inspector controller={controller} views={views} selected={selected} onSelect={setSelected} lan={lan} />
       </main>
-      <EventLog controller={controller} views={views} />
+      {lan ? (
+        <EventLog controller={controller} views={views} />
+      ) : (
+        <footer className="border-t border-line bg-panel px-3 py-2 text-muted">联网流量经中继服务器转发，不经过模拟器；转发计数见服务器的 /health。</footer>
+      )}
     </div>
   );
 }
@@ -183,6 +210,7 @@ function PlayerTile(props: {
   zoomed: boolean;
   hidden: boolean;
   selected: boolean;
+  lan: boolean;
   onSelect(): void;
   onZoom(): void;
 }) {
@@ -218,9 +246,11 @@ function PlayerTile(props: {
           <span className="truncate text-muted">{statusLabel(view)}</span>
         </div>
         <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [&>button]:shrink-0 [&>button]:px-1.5 [&>button]:py-px [&>button]:text-[12px]">
-          <button className={tileButtonStateClass} data-on={!view?.online} onClick={() => (view?.online ? controller.disconnect(instanceId) : controller.reconnect(instanceId))}>
-            {view?.online ? '断网' : '恢复'}
-          </button>
+          {props.lan && (
+            <button className={tileButtonStateClass} data-on={!view?.online} onClick={() => (view?.online ? controller.disconnect(instanceId) : controller.reconnect(instanceId))}>
+              {view?.online ? '断网' : '恢复'}
+            </button>
+          )}
           <button className={tileButtonStateClass} data-on={!visible} onClick={() => controller.setVisible(instanceId, !visible)}>
             {visible ? '切后台' : '回前台'}
           </button>
@@ -243,9 +273,11 @@ function PlayerTile(props: {
   );
 }
 
-function Inspector(props: { controller: SimulationController; views: InstanceView[]; selected: string; onSelect(id: string): void }) {
+function Inspector(props: { controller: SimulationController; views: InstanceView[]; selected: string; lan: boolean; onSelect(id: string): void }) {
   const { controller } = props;
-  const [tab, setTab] = useState<'room' | 'state' | 'client' | 'network'>('room');
+  const [tabState, setTab] = useState<'room' | 'state' | 'client' | 'network'>('room');
+  // 联网模式没有 Network 面板
+  const tab = !props.lan && tabState === 'network' ? 'room' : tabState;
   const inspection = controller.hostInspection();
   const selected = props.views.find((v) => v.instanceId === props.selected);
   return (
@@ -258,11 +290,13 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
             ['client', `实例 ${props.selected.toUpperCase()}`],
             ['network', 'Network'],
           ] as const
-        ).map(([k, label]) => (
-          <button key={k} className="data-[active=true]:border-accent data-[active=true]:text-accent" data-active={tab === k} onClick={() => setTab(k)}>
-            {label}
-          </button>
-        ))}
+        )
+          .filter(([k]) => props.lan || k !== 'network')
+          .map(([k, label]) => (
+            <button key={k} className="data-[active=true]:border-accent data-[active=true]:text-accent" data-active={tab === k} onClick={() => setTab(k)}>
+              {label}
+            </button>
+          ))}
       </div>
       <div className="flex-1 overflow-auto px-3 py-2">
         {tab === 'room' &&
@@ -361,7 +395,7 @@ function Inspector(props: { controller: SimulationController; views: InstanceVie
             <pre className={snapshotClass}>{JSON.stringify(selected.status.client.snapshot?.view ?? null, null, 2)}</pre>
           </>
         )}
-        {tab === 'network' && <NetworkPanel controller={controller} views={props.views} />}
+        {tab === 'network' && props.lan && <NetworkPanel controller={controller} views={props.views} />}
       </div>
     </aside>
   );

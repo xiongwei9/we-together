@@ -2,7 +2,8 @@ import type { AudioPort, Canvas2D, CanvasPort, Clock, Platform, PointerInput, Ra
 
 /**
  * Web 平台适配（设计 §6.1 / §13.3）。
- * 每个模拟实例注入独立 Canvas、Storage、文本输入 overlay；帧调度使用页面级单个 RAF。
+ * 模拟器：每个实例注入独立 Canvas、Storage、文本输入 overlay；帧调度使用页面级单个 RAF。
+ * Web 客户端：单个实例占满页面（`page: true`），逻辑尺寸跟随 Canvas 显示尺寸，存储使用 localStorage。
  */
 
 export interface FrameScheduler {
@@ -100,11 +101,43 @@ function createWebAudio(initialMuted: boolean): AudioPort {
   };
 }
 
+/**
+ * localStorage 存储（Web 客户端）；按前缀隔离键名。
+ * 隐私模式等不可用时退化为内存存储（刷新后丢失，不影响游戏）。
+ */
+export function createLocalStorage(prefix: string): StoragePort {
+  const fallback = new Map<string, string>();
+  const attempt = <T>(fn: (ls: Storage) => T, otherwise: () => T): T => {
+    try {
+      return fn(window.localStorage);
+    } catch {
+      return otherwise();
+    }
+  };
+  return {
+    async get(key) {
+      return attempt((ls) => ls.getItem(prefix + key), () => fallback.get(key) ?? null);
+    },
+    async set(key, value) {
+      attempt((ls) => ls.setItem(prefix + key, value), () => void fallback.set(key, value));
+    },
+    async remove(key) {
+      attempt((ls) => ls.removeItem(prefix + key), () => void fallback.delete(key));
+    },
+  };
+}
+
 interface WebPlatformOptions {
   canvas: HTMLCanvasElement;
   /** 文本输入 overlay 的挂载容器（与 Canvas 同一 Tile，position: relative） */
   overlayHost: HTMLElement;
-  logicalSize: { width: number; height: number };
+  /** 固定逻辑尺寸（模拟器模拟手机屏幕）；不提供时跟随 Canvas 的显示尺寸（Web 客户端） */
+  logicalSize?: { width: number; height: number };
+  /**
+   * 单个实例占满整个页面（Web 客户端）：跟随页面可见性（切到后台 / 锁屏）触发 onVisibility，
+   * keepScreenOn 使用 Screen Wake Lock API。模拟器由实例管理器驱动可见性，不开启。
+   */
+  page?: boolean;
   safeArea?: Viewport['safeArea'];
   storage: StoragePort;
   clock: Clock;
@@ -114,7 +147,13 @@ interface WebPlatformOptions {
 }
 
 export function createWebPlatform(options: WebPlatformOptions): Platform {
-  const { canvas, overlayHost, logicalSize, storage, clock, random, frames } = options;
+  const { canvas, overlayHost, storage, clock, random, frames } = options;
+  /** 逻辑尺寸：固定值，或 Canvas 当前的 CSS 尺寸 */
+  const logicalSize = (): { width: number; height: number } => {
+    if (options.logicalSize) return options.logicalSize;
+    const rect = canvas.getBoundingClientRect();
+    return { width: Math.max(1, rect.width || window.innerWidth), height: Math.max(1, rect.height || window.innerHeight) };
+  };
   const safeArea = options.safeArea ?? { top: 20, right: 0, bottom: 12, left: 0 };
   const cleanups: Unsubscribe[] = [];
   const resizeHandlers = new Set<(v: Viewport) => void>();
@@ -123,12 +162,13 @@ export function createWebPlatform(options: WebPlatformOptions): Platform {
   let activePrompt: { cancel(): void } | null = null;
 
   const viewport = (): Viewport => {
+    const size = logicalSize();
     const rect = canvas.getBoundingClientRect();
-    const cssWidth = rect.width > 0 ? rect.width : logicalSize.width;
+    const cssWidth = rect.width > 0 ? rect.width : size.width;
     return {
-      width: logicalSize.width,
-      height: logicalSize.height,
-      pixelRatio: Math.max(0.5, (cssWidth * (window.devicePixelRatio || 1)) / logicalSize.width),
+      width: size.width,
+      height: size.height,
+      pixelRatio: Math.max(0.5, (cssWidth * (window.devicePixelRatio || 1)) / size.width),
       safeArea,
     };
   };
@@ -163,11 +203,38 @@ export function createWebPlatform(options: WebPlatformOptions): Platform {
   /** 按 Canvas 自身的显示矩形映射回逻辑坐标（处理网格缩放） */
   const toLogical = (e: PointerEvent): { x: number; y: number } => {
     const rect = canvas.getBoundingClientRect();
+    const size = logicalSize();
     return {
-      x: ((e.clientX - rect.left) / rect.width) * logicalSize.width,
-      y: ((e.clientY - rect.top) / rect.height) * logicalSize.height,
+      x: ((e.clientX - rect.left) / rect.width) * size.width,
+      y: ((e.clientY - rect.top) / rect.height) * size.height,
     };
   };
+
+  // 屏幕常亮（仅 page 模式）：页面回到前台时浏览器会释放 Wake Lock，需要重新申请
+  let wantAwake = false;
+  let wakeLock: WakeLockSentinel | null = null;
+  const acquireWakeLock = (): void => {
+    if (!wantAwake || wakeLock || document.visibilityState !== 'visible' || !('wakeLock' in navigator)) return;
+    navigator.wakeLock.request('screen').then(
+      (lock) => {
+        if (!wantAwake) return void lock.release();
+        wakeLock = lock;
+        lock.addEventListener('release', () => {
+          if (wakeLock === lock) wakeLock = null;
+        });
+      },
+      () => undefined, // 不支持或被拒绝：静默降级
+    );
+  };
+  if (options.page) {
+    const onPageVisibility = (): void => {
+      const visible = document.visibilityState === 'visible';
+      visibilityHandlers.forEach((h) => h(visible));
+      if (visible) acquireWakeLock();
+    };
+    document.addEventListener('visibilitychange', onPageVisibility);
+    cleanups.push(() => document.removeEventListener('visibilitychange', onPageVisibility));
+  }
 
   return {
     kind: 'web',
@@ -197,7 +264,7 @@ export function createWebPlatform(options: WebPlatformOptions): Platform {
       resizeHandlers.add(fn);
       return () => resizeHandlers.delete(fn);
     },
-    // 实例级 show/hide 由模拟器通过 GameInstance.setVisible 驱动；页面级可见性由实例管理器处理
+    // page 模式跟随页面可见性；模拟器的实例级 show/hide 由实例管理器通过 GameInstance.setVisible 驱动
     onVisibility(fn) {
       visibilityHandlers.add(fn);
       return () => visibilityHandlers.delete(fn);
@@ -248,8 +315,15 @@ export function createWebPlatform(options: WebPlatformOptions): Platform {
         setTimeout(() => input.focus({ preventScroll: true }), 0);
       });
     },
-    keepScreenOn() {
-      /* PC 模拟器不需要 */
+    keepScreenOn(on) {
+      // PC 模拟器不需要；Web 客户端（房主）对局中保持屏幕常亮
+      if (!options.page) return;
+      wantAwake = on;
+      if (on) acquireWakeLock();
+      else {
+        void wakeLock?.release();
+        wakeLock = null;
+      }
     },
     audio,
     storage,
@@ -257,10 +331,35 @@ export function createWebPlatform(options: WebPlatformOptions): Platform {
     random,
     dispose() {
       activePrompt?.cancel();
+      wantAwake = false;
+      void wakeLock?.release();
+      wakeLock = null;
       cleanups.forEach((c) => c());
       resizeHandlers.clear();
       visibilityHandlers.clear();
       audio.dispose();
     },
+  };
+}
+
+/**
+ * 浏览器 WebSocket 连接（联网模式中继）。结构上符合 @we/multiplayer 的 RelayConnect：
+ * 二进制帧以 Uint8Array 交给上层，文本帧原样交给上层。
+ */
+export function connectBrowserWebSocket(
+  url: string,
+  handlers: { open(): void; message(data: Uint8Array | string): void; close(): void },
+): { send(data: Uint8Array | string): void; close(): void } {
+  const ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  ws.addEventListener('open', () => handlers.open());
+  ws.addEventListener('message', (ev: MessageEvent) => handlers.message(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data as ArrayBuffer)));
+  // error 之后浏览器总会触发 close，只需处理 close
+  ws.addEventListener('close', () => handlers.close());
+  return {
+    send: (data) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    },
+    close: () => ws.close(),
   };
 }

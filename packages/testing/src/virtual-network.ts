@@ -123,7 +123,7 @@ export function createVirtualNetwork(options: {
   const route = (fromId: string, to: Endpoint, original: Uint8Array): void => {
     const bytes = original.slice();
     const meta = describeDatagram(bytes);
-    const toId = to.kind === 'memory' ? to.nodeId : `${to.host}:${to.port}`;
+    const toId = to.kind === 'memory' ? to.nodeId : to.kind === 'udp' ? `${to.host}:${to.port}` : `relay:${to.peer}`;
     const base = { from: fromId, to: toId, size: bytes.length, kind: meta.kind, type: meta.type, messageId: meta.messageId, part: meta.part };
     const drop = (reason: string): void => {
       counters.dropped++;

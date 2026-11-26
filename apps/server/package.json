@@ -1,0 +1,26 @@
+{
+  "name": "@we/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.3.7",
+    "fastify": "^5.12.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.10",
+    "@types/ws": "^8.18.2",
+    "@we/game-app": "workspace:*",
+    "@we/lost-cities": "workspace:*",
+    "@we/multiplayer": "workspace:*",
+    "@we/platform": "workspace:*",
+    "@we/testing": "workspace:*",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  }
+}

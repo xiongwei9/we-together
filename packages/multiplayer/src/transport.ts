@@ -1,9 +1,13 @@
 import type { Unsubscribe } from '@we/platform';
 
-/** 物理地址（设计 §8.1）：初次 JOIN 还没有逻辑 peerId */
+/**
+ * 物理地址（设计 §8.1）：初次 JOIN 还没有逻辑 peerId。
+ * relay：联网模式下中继服务器分配的 6 位编号；房主的编号即房间号
+ */
 export type Endpoint =
   | { kind: 'udp'; host: string; port: number }
-  | { kind: 'memory'; networkId: string; nodeId: string };
+  | { kind: 'memory'; networkId: string; nodeId: string }
+  | { kind: 'relay'; peer: string };
 
 export interface Packet {
   from: Endpoint;
@@ -25,8 +29,12 @@ export interface Transport {
 }
 
 export function endpointKey(e: Endpoint): string {
+  if (e.kind === 'relay') return `relay:${e.peer}`;
   return e.kind === 'udp' ? `udp:${e.host}:${e.port}` : `mem:${e.networkId}/${e.nodeId}`;
 }
+
+/** 联网房间号：中继服务器分配的 6 位数字 */
+export const ROOM_CODE = /^\d{6}$/;
 
 export interface AddressCodec {
   format(e: Endpoint): string;
@@ -35,13 +43,15 @@ export interface AddressCodec {
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
-/** 默认地址格式：`192.168.1.10:20000` 或 `mem:<networkId>/<nodeId>` */
+/** 默认地址格式：`192.168.1.10:20000`、`mem:<networkId>/<nodeId>`，或联网房间号 `123456` */
 export const defaultAddressCodec: AddressCodec = {
   format(e) {
+    if (e.kind === 'relay') return e.peer;
     return e.kind === 'udp' ? `${e.host}:${e.port}` : `mem:${e.networkId}/${e.nodeId}`;
   },
   parse(raw) {
     const text = raw.trim();
+    if (ROOM_CODE.test(text)) return { kind: 'relay', peer: text };
     const mem = /^mem:([\w-]+)\/([\w-]+)$/.exec(text);
     if (mem) return { kind: 'memory', networkId: mem[1]!, nodeId: mem[2]! };
     const idx = text.lastIndexOf(':');

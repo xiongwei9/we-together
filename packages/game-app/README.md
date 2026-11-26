@@ -12,12 +12,15 @@ import { createGameInstance } from '@we/game-app';
 const instance = createGameInstance({
   instanceId: 'wechat',
   platform,                 // @we/platform 的 Platform 实现
-  transport,                // @we/multiplayer 的 Transport 实现
+  network: 'lan',           // 联机方式：'lan'（默认）或 'online'，由入口决定
+  transport,                // 与 network 对应的 Transport：局域网 UDP / 内存网络，或 createRelayTransport
   games: [werewolfGame, lostCitiesGame],  // GamePluginDefinition 列表
   // 可选：app（首页主题）、address、gameConfigs（按 gameId 覆盖配置）、debug（仅模拟器）、defaultNickname、seatHint
 });
 await instance.start();
 ```
+
+联机方式由入口通过 `network` 决定，app 内不可切换：微信入口用 `'lan'`（广播发现房间、「加入房间」列表）；Web 无法使用局域网，用 `'online'`（`createRelayTransport`）。联网时启动不连接服务器，第一次「创建房间」或加入时才连接（连不上会提示，可重试）；房主的中继编号即 6 位房间号（大厅显示），其他玩家点「输入房间号加入」。
 
 页面层级：注册多个游戏时，启动进入 **app 首页**（`app.title` / `app.tagline` 主题 + 游戏列表，以及未结束房间的恢复入口）；点选游戏进入该游戏的**游戏首页**（昵称、创建房间、加入房间，左上角「‹ 全部游戏」返回）。「创建房间」「加入房间」「手动输入地址」都针对当前游戏，加入页只列出当前游戏的房间。进入房间后按 `room.gameId` 选择表现插件。只注册一个游戏时没有 app 首页，直接进入游戏首页，房间发现也只搜索该游戏。
 

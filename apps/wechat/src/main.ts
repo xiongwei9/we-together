@@ -8,6 +8,8 @@ import { createWechatUdpTransport } from './udp-transport';
 const instance = createGameInstance({
   instanceId: 'wechat',
   platform: createWechatPlatform(),
+  // 微信支持局域网 UDP：仅局域网联机
+  network: 'lan',
   transport: createWechatUdpTransport(),
   games: [werewolfGame, lostCitiesGame],
 });
